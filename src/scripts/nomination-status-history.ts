@@ -418,15 +418,18 @@ export default () => {
               const expandedBox = makeChildNode(rightBox, "div");
               expandedBox.classList.add("uwtnsh-expanded");
 
-              let collapsed = !config.get("expandedByDefault");
-              box.addEventListener("click", (ev) => {
-                ev.preventDefault();
+              const toggleCollapsed = (ev?: Event) => {
+                ev?.preventDefault();
                 collapsed = !collapsed;
                 collapsedLine.style.display = collapsed ? "block" : "none";
                 expandedBox.style.display = collapsed ? "none" : "block";
                 leftBox.textContent = collapsed ? RIGHT_TRIANGLE : DOWN_TRIANGLE;
                 return false;
-              });
+              };
+
+              let collapsed = config.get("expandedByDefault");
+              toggleCollapsed();
+              box.addEventListener("click", toggleCollapsed);
 
               // Don't populate the dropdown until the nomination change detection has run successfully.
               // That process sets ready = true when done. If it was already ready, then this will
