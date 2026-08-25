@@ -121,6 +121,8 @@ export default () => {
     defaultConfig: {
       askAboutCrashReports: true,
       showImportButton: true,
+      notifyNewContributions: true,
+      expandedByDefault: false,
     },
     sessionData: {},
     initialize: (toolbox, logger, config) => {
@@ -133,6 +135,18 @@ export default () => {
       config.setUserEditable("showImportButton", {
         label: "Enable backup data import",
         help: "Adds a sidebar button to import old data from Nomination Status History",
+        editor: new CheckboxEditor(),
+      });
+
+      config.setUserEditable("notifyNewContributions", {
+        label: "Notify about new contributions",
+        help: "Create popup notifications whenever new contributions are detected in the contributions list",
+        editor: new CheckboxEditor(),
+      });
+
+      config.setUserEditable("expandedByDefault", {
+        label: "Expand the status history list by default",
+        help: "Always show the full history by default when viewing a contribution",
         editor: new CheckboxEditor(),
       });
 
@@ -404,7 +418,7 @@ export default () => {
               const expandedBox = makeChildNode(rightBox, "div");
               expandedBox.classList.add("uwtnsh-expanded");
 
-              let collapsed = true;
+              let collapsed = !config.get("expandedByDefault");
               box.addEventListener("click", (ev) => {
                 ev.preventDefault();
                 collapsed = !collapsed;
@@ -601,22 +615,24 @@ export default () => {
         // Commit all changes.
         idb.commit();
 
-        const messageTypeMapping: Record<ContributionType, (count: number) => string> = {
-          NOMINATION: (c) => `Found ${c} new nomination${c > 1 ? "s" : ""} in the list!`,
-          EDIT_TITLE: (c) => `Found ${c} new title edit${c > 1 ? "s" : ""} in the list!`,
-          EDIT_DESCRIPTION: (c) => `Found ${c} new description edit${c > 1 ? "s" : ""} in the list!`,
-          EDIT_LOCATION: (c) => `Found ${c} new location edit${c > 1 ? "s" : ""} in the list!`,
-          PHOTO: (c) => `Found ${c} new photo${c > 1 ? "s" : ""} in the list!`,
-        };
+        if (config.get("notifyNewContributions")) {
+          const messageTypeMapping: Record<ContributionType, (count: number) => string> = {
+            NOMINATION: (c) => `Found ${c} new nomination${c > 1 ? "s" : ""} in the list!`,
+            EDIT_TITLE: (c) => `Found ${c} new title edit${c > 1 ? "s" : ""} in the list!`,
+            EDIT_DESCRIPTION: (c) => `Found ${c} new description edit${c > 1 ? "s" : ""} in the list!`,
+            EDIT_LOCATION: (c) => `Found ${c} new location edit${c > 1 ? "s" : ""} in the list!`,
+            PHOTO: (c) => `Found ${c} new photo${c > 1 ? "s" : ""} in the list!`,
+          };
 
-        for (const [type, messageGenerator] of iterObject(messageTypeMapping)) {
-          if (newCount[type] > 0) {
-            const message = messageGenerator(newCount[type]);
-            toolbox.notify({
-              color: "gray",
-              message,
-              icon: createNotificationIcon(type),
-            });
+          for (const [type, messageGenerator] of iterObject(messageTypeMapping)) {
+            if (newCount[type] > 0) {
+              const message = messageGenerator(newCount[type]);
+              toolbox.notify({
+                color: "gray",
+                message,
+                icon: createNotificationIcon(type),
+              });
+            }
           }
         }
       };
