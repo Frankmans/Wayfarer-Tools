@@ -192,7 +192,7 @@ export async function makeUserscriptHeader() {
 // @author            ${pkg.author.name}
 // @copyright         ${pkg.author.name} (${pkg.author.url})
 // @icon              ${getResourceUrl("images/logo_48.png", buildNbr)}
-// @match             https://wayfarer.nianticlabs.com/*
+// @match             https://wayfarer.scopely.com/*
 // @downloadURL       ${scriptUrl}
 // @updateURL         ${metaUrl}
 // @grant             GM.getResourceUrl

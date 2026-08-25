@@ -58,7 +58,7 @@ https://static.varden.info/wayfarer-tools/dist/unified-wayfarer-tools.user.js
 
 If you're familiar with the older [Wayfarer Addons](https://github.com/tehstone/wayfarer-addons) this part will be a bit different.
 Installation of the single script linked previously will make all current tools available.
-Individual tools can turned on and off from the [Wayfarer Settings page](https://wayfarer.nianticlabs.com/new/settings):
+Individual tools can turned on and off from the [Wayfarer Settings page](https://wayfarer.scopely.com/new/settings):
 
 ![Example Screenshot](https://i.imgur.com/LxYytUU.png)
 
@@ -95,7 +95,7 @@ This tool enables nearly full control of the review page via the keyboard.
 
 ## Nomination Map 
 
-Places a map of all your contributions at the top of the [Contributions Page](https://wayfarer.nianticlabs.com/new/nominations). Also places a counter of the currently listed contributions above the list, this counter updates whenever the search or filter is updated.
+Places a map of all your contributions at the top of the [Contributions Page](https://wayfarer.scopely.com/new/nominations). Also places a counter of the currently listed contributions above the list, this counter updates whenever the search or filter is updated.
 
 ## Nomination Stats
 
