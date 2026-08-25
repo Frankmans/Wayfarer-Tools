@@ -33,7 +33,7 @@
 
 (() => {
   const UUID = 'de5a619c-2de7-4b1e-8eef-190397c0ad62'; // randomly generated, unique to this userscript, please don't re-use in other scripts
-  const ORIGIN_WAYFARER = 'https://wayfarer.nianticlabs.com';
+  const ORIGIN_WAYFARER = 'https://wayfarer.scopely.com';
 
   const send = msg => window.parent.postMessage({ uuid: UUID, data: msg }, ORIGIN_WAYFARER);
 
