@@ -120,7 +120,7 @@ export default () => {
     description: "Track changes to contribution status, and receive alerts when a contribution has changed status.",
     defaultConfig: {
       askAboutCrashReports: true,
-      showImportButton: Date.now() < 1785542400000, // Aug 1, 2026, midnight UTC
+      showImportButton: true,
     },
     sessionData: {},
     initialize: (toolbox, logger, config) => {
