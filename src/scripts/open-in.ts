@@ -155,8 +155,8 @@ const providers: Provider[] = [
   },
   {
     // Czech Republic and Slovakia
-    label: "Mapy.cz",
-    url: "https://en.mapy.cz/zakladni?x=%lng%&y=%lat%&z=18&base=ophoto",
+    label: "Mapy.com",
+    url: "https://mapy.com/en/zakladni?source=coor&id=%lng%%2C%lat%&x=%lng%&y=%lat%&z=18&base=ophoto",
     regions: ["CZ", "SK"],
   },
   {
