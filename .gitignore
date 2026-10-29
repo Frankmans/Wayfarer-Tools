@@ -1,6 +1,7 @@
 .env
 node_modules/
-dist/
+dist/*
 !dist/*.user.js
+!dist/*.meta.js
 .build.json
 /assets/geofences.bin*

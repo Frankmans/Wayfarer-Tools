@@ -14,7 +14,7 @@ export const mode = getCliArg("mode", "development");
  * Where the userscript will be hosted
  * @type {"dev" | "github" | "varden"}
  */
-const host = getCliArg("host", "varden");
+const host = getCliArg("host", "github");
 
 /**
  * The branch on GitHub to use for various URLs
@@ -31,7 +31,7 @@ const suffix = getCliArg("suffix", "");
 /**
  * Path to the GitHub repo in the format "User/Repo"
  */
-const repo = "bilde2910/Wayfarer-Tools";
+const repo = "Frankmans/Wayfarer-Tools";
 
 /**
  * Name of the emitted userscript file
@@ -59,7 +59,9 @@ export const baseUrl = (() => {
 
 const scriptUrl = `${baseUrl}/dist/${userscriptDistFile}`;
 const metaUrl = `${baseUrl}/dist/${userscriptMetaFile}`;
-const assetBaseUrl = `${baseUrl}/assets`;
+// On GitHub the downloadable resources (geofences.json) live in resources/; upstream's deploy job
+// copies resources/* into the server's assets/ folder, which GitHub hosting has no equivalent of.
+const assetBaseUrl = host === "github" ? `${baseUrl}/resources` : `${baseUrl}/assets`;
 
 /**
  * Used as a kind of "build number", though note it is always behind by at least one commit,
@@ -85,8 +87,14 @@ export function getLastCommitSha() {
  */
 function getCliArg(name, defaultVal) {
   console.log(process.argv);
-  const arg = process.argv.find((v) => v.trim().match(new RegExp(`^(--)?${name}=.+$`, "i")));
-  const val = arg?.split("=")?.[1];
+  const argv = process.argv.map((v) => v.trim());
+  // post-build gets `--name=value`; rollup itself gets `--config-name value` or `--config-name=value`
+  const eqArg = argv.find((v) => v.match(new RegExp(`^(--)?(config-)?${name}=.+$`, "i")));
+  let val = eqArg?.split("=")?.[1];
+  if (!val) {
+    const i = argv.findIndex((v) => v.toLowerCase() === `--config-${name}`.toLowerCase());
+    if (i !== -1 && argv[i + 1] && !argv[i + 1].startsWith("-")) val = argv[i + 1];
+  }
   return (val && val.length > 0 ? val : defaultVal)?.trim();
 }
 
