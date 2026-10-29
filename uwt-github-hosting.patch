@@ -1,0 +1,97 @@
+diff --git a/.gitignore b/.gitignore
+index 8eef5ef..9ea5468 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,6 +1,7 @@
+ .env
+ node_modules/
+-dist/
++dist/*
+ !dist/*.user.js
++!dist/*.meta.js
+ .build.json
+ /assets/geofences.bin*
+diff --git a/package.json b/package.json
+index 5c69a1f..1e07cad 100644
+--- a/package.json
++++ b/package.json
+@@ -12,7 +12,7 @@
+     "build": "rollup -c",
+     "build-watch": "rollup -c --config-mode development --config-host dev --config-branch main --config-assetSource=local",
+     "build-develop": "rollup -c --config-mode development --config-host dev --config-branch main",
+-    "build-prod": "npm run build-prod-varden",
++    "build-prod": "npm run build-prod-gh",
+     "build-prod-base": "rollup -c --config-mode production --config-branch main",
+     "build-prod-gh": "npm run build-prod-base -- --config-host github",
+     "build-prod-varden": "npm run build-prod-base -- --config-host varden",
+@@ -23,7 +23,7 @@
+   },
+   "repository": {
+     "type": "git",
+-    "url": "git+https://github.com/bilde2910/Wayfarer-Tools.git"
++    "url": "git+https://github.com/Frankmans/Wayfarer-Tools.git"
+   },
+   "author": {
+     "name": "bilde2910",
+@@ -31,9 +31,9 @@
+   },
+   "license": "GPL-3.0-only",
+   "bugs": {
+-    "url": "https://github.com/bilde2910/Wayfarer-Tools/issues"
++    "url": "https://github.com/Frankmans/Wayfarer-Tools/issues"
+   },
+-  "homepage": "https://github.com/bilde2910/Wayfarer-Tools#readme",
++  "homepage": "https://github.com/Frankmans/Wayfarer-Tools",
+   "devDependencies": {
+     "@eslint/eslintrc": "^3.3.1",
+     "@eslint/js": "^9.39.1",
+diff --git a/src/tools/build-utils.mjs b/src/tools/build-utils.mjs
+index 8c5139a..0115bfd 100644
+--- a/src/tools/build-utils.mjs
++++ b/src/tools/build-utils.mjs
+@@ -14,7 +14,7 @@ export const mode = getCliArg("mode", "development");
+  * Where the userscript will be hosted
+  * @type {"dev" | "github" | "varden"}
+  */
+-const host = getCliArg("host", "varden");
++const host = getCliArg("host", "github");
+ 
+ /**
+  * The branch on GitHub to use for various URLs
+@@ -31,7 +31,7 @@ const suffix = getCliArg("suffix", "");
+ /**
+  * Path to the GitHub repo in the format "User/Repo"
+  */
+-const repo = "bilde2910/Wayfarer-Tools";
++const repo = "Frankmans/Wayfarer-Tools";
+ 
+ /**
+  * Name of the emitted userscript file
+@@ -59,7 +59,9 @@ export const baseUrl = (() => {
+ 
+ const scriptUrl = `${baseUrl}/dist/${userscriptDistFile}`;
+ const metaUrl = `${baseUrl}/dist/${userscriptMetaFile}`;
+-const assetBaseUrl = `${baseUrl}/assets`;
++// On GitHub the downloadable resources (geofences.json) live in resources/; upstream's deploy job
++// copies resources/* into the server's assets/ folder, which GitHub hosting has no equivalent of.
++const assetBaseUrl = host === "github" ? `${baseUrl}/resources` : `${baseUrl}/assets`;
+ 
+ /**
+  * Used as a kind of "build number", though note it is always behind by at least one commit,
+@@ -85,8 +87,14 @@ export function getLastCommitSha() {
+  */
+ function getCliArg(name, defaultVal) {
+   console.log(process.argv);
+-  const arg = process.argv.find((v) => v.trim().match(new RegExp(`^(--)?${name}=.+$`, "i")));
+-  const val = arg?.split("=")?.[1];
++  const argv = process.argv.map((v) => v.trim());
++  // post-build gets `--name=value`; rollup itself gets `--config-name value` or `--config-name=value`
++  const eqArg = argv.find((v) => v.match(new RegExp(`^(--)?(config-)?${name}=.+$`, "i")));
++  let val = eqArg?.split("=")?.[1];
++  if (!val) {
++    const i = argv.findIndex((v) => v.toLowerCase() === `--config-${name}`.toLowerCase());
++    if (i !== -1 && argv[i + 1] && !argv[i + 1].startsWith("-")) val = argv[i + 1];
++  }
+   return (val && val.length > 0 ? val : defaultVal)?.trim();
+ }
+ 
