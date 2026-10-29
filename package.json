@@ -13,7 +13,7 @@
     "build-watch": "rollup -c --config-mode development --config-host dev --config-branch main --config-assetSource=local",
     "build-develop": "rollup -c --config-mode development --config-host dev --config-branch main",
     "build-prod": "npm run build-prod-gh",
-    "build-prod-base": "rollup -c --config-mode production --config-branch main",
+    "build-prod-base": "rollup -c --config-mode production --config-branch redesign-port",
     "build-prod-gh": "npm run build-prod-base -- --config-host github",
     "build-prod-varden": "npm run build-prod-base -- --config-host varden",
     "post-build": "npm run node-ts -- ./src/tools/post-build.ts",

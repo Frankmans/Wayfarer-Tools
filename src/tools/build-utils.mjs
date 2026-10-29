@@ -18,9 +18,9 @@ const host = getCliArg("host", "github");
 
 /**
  * The branch on GitHub to use for various URLs
- * @type {"main"}
+ * @type {string}
  */
-const branch = getCliArg("branch", (mode === "production" ? "main" : "develop"));
+const branch = getCliArg("branch", (mode === "production" ? "redesign-port" : "develop"));
 
 /**
  * Optional prefix to add between the script name and the file extension
