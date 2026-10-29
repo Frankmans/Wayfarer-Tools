@@ -52,7 +52,7 @@ IITC Button will offer to install Wayfarer Tools for you, but it will not actual
 
 As noted previously, the current state of this script is very early development. If you want to be an early tester, you can install all of the Wayfarer tools using this link:
 
-https://static.varden.info/wayfarer-tools/dist/unified-wayfarer-tools.user.js
+https://github.com/Frankmans/Wayfarer-Tools/raw/refs/heads/redesign-port/dist/unified-wayfarer-tools.user.js
 
 ## Setup
 
