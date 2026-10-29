@@ -57,10 +57,30 @@ export default () => {
       let interval: any = 0;
       let rejectModalCheckTimer: any = 0;
 
+      const ensureTimerStyle = () => {
+        if (document.getElementById("uwftmr-style")) return;
+        const st = document.createElement("style");
+        st.id = "uwftmr-style";
+        st.textContent = `
+          #uwftmr-outer.uwftmr-div{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:100000;
+            display:flex;align-items:center;gap:.6em;margin:0;padding:.25em .9em;border-radius:999px;
+            background:rgba(17,24,39,.92);color:#f9fafb;box-shadow:0 2px 8px rgba(0,0,0,.4);
+            font-size:14px;line-height:1.2;pointer-events:none}
+          #uwftmr-outer p{margin:0}
+          #uwftmr-outer .uwftmr-counter{font-size:18px;font-weight:bold;color:#20b8e3;font-variant-numeric:tabular-nums}
+          #uwftmr-outer .uwftmr-counter.uwftmr-warn{color:#f2a134}
+          #uwftmr-outer .uwftmr-counter.uwftmr-expired{color:#f87171}
+          .uwftmr-ssb{cursor:pointer}`;
+        document.head.appendChild(st);
+      };
+
       const injectTimer = async (candidate: AnyReview) => {
+        console.log("[I]", "[unified-wf-tools]", "[patch]", "review-timer received review data; expires =", candidate && candidate.expires, "; keys =", candidate ? Object.keys(candidate).slice(0, 12).join(",") : "none");
         submitButtonClicked = false;
         expireTime = candidate.expires;
-        const container = await untilTruthy(() => document.querySelector("wf-logo")?.parentElement?.parentElement);
+        // redesign: wf-logo no longer exists; the timer is a small fixed badge on <body>
+        ensureTimerStyle();
+        const container = await untilTruthy(() => document.body);
         let counter = document.getElementById("uwftmr-counter");
         if (counter === null) {
           const div = document.createElement("div");
@@ -99,7 +119,11 @@ export default () => {
       };
 
       const updateTime = (counter: HTMLElement, expiry: number) => {
+        const outer = document.getElementById("uwftmr-outer");
+        if (outer) outer.style.display = /\/review(\/|$)/.test(location.pathname) ? "flex" : "none";
         const diff = Math.ceil((expiry - new Date().getTime()) / 1000);
+        counter.classList.toggle("uwftmr-warn", diff >= 0 && diff < 120);
+        counter.classList.toggle("uwftmr-expired", diff < 0);
         if (diff < 0) {
           counter!.textContent = "Expired";
           return;
@@ -109,35 +133,51 @@ export default () => {
         counter!.textContent = `${minutes}:${seconds}`;
       };
 
+      // redesign: the Submit button is found by its label instead of .wf-split-button
+      const findSubmitButton = () => Array.from(document.querySelectorAll("button"))
+        .find(b => b.id !== "uwftmr-ssb-0" && b.textContent!.trim() === "Submit" && !b.closest("[role=dialog]"));
+
+      let ssbTries = 0;
       const addSmartSubmitButton = () => {
-        const buttons = document.getElementsByClassName("wf-split-button");
-        if (buttons.length < 1) {
-          setTimeout(addSmartSubmitButton, 400);
+        const sButton = findSubmitButton();
+        const existing = document.getElementById("uwftmr-ssb-0") as HTMLButtonElement | null;
+        if (!sButton && !existing) {
+          if (++ssbTries < 40) setTimeout(addSmartSubmitButton, 400);
+          return;
+        }
+        ssbTries = 0;
+
+        if (!config.get("smartSubmit")) {
+          if (existing) existing.style.display = "none";
+          if (sButton) sButton.style.display = "";
           return;
         }
 
-        const smartSubmitEnabled = config.get("smartSubmit");
-        for (let i = 0; i < buttons.length; i++) {
-          let ssButton = document.getElementById(`uwftmr-ssb-${i}`) as HTMLButtonElement;
-          if (!smartSubmitEnabled) {
-            if (ssButton !== null) ssButton.style.display = "none";
-            return;
-          }
-          if (ssButton === null) {
-            ssButton = document.createElement("button");
-            ssButton.classList.add("wf-button", "wf-split-button__main", "uwftmr-ssb");
-            ssButton.disabled = true;
-            ssButton.id = `uwftmr-ssb-${i}`;
-            ssButton.textContent = "Smart Submit";
-            ssButton.addEventListener("click", () => checkSubmitReview());
-          }
-          const sButton = buttons[i].firstElementChild! as HTMLElement;
-          insertAfter(sButton, ssButton);
-          sButton.style.display = "none";
+        let ssButton = existing;
+        if (ssButton === null) {
+          ssButton = document.createElement("button");
+          ssButton.id = "uwftmr-ssb-0";
+          ssButton.type = "button";
+          ssButton.textContent = "Smart Submit";
+          ssButton.addEventListener("click", () => checkSubmitReview());
+          sButton!.parentNode!.insertBefore(ssButton, sButton!);
         }
+        ssButton.style.display = "";
 
-        addSubmitButtonObserver();
-        addRejectModalCheck();
+        const real = findSubmitButton();
+        const mirror = () => {
+          if (!real) return;
+          const cls = real.className + " uwftmr-ssb";
+          if (ssButton!.className !== cls) ssButton!.className = cls;
+          if (ssButton!.disabled !== real.disabled) ssButton!.disabled = real.disabled;
+          if (real.style.display !== "none") real.style.display = "none";
+        };
+        mirror();
+        if (real && !(real as any).__uwtObserved) {
+          (real as any).__uwtObserved = true;
+          // keep Smart Submit looking enabled/disabled like the real button (only that one element is watched)
+          new MutationObserver(mirror).observe(real, { attributes: true, attributeFilter: ["disabled", "class"] });
+        }
       };
 
       const addRejectModalCheck = () => {
@@ -238,7 +278,7 @@ export default () => {
             const parent = document.getElementsByClassName("mat-dialog-container")[0];
             btn = parent.querySelector<HTMLButtonElement>("[class*='wf-button--primary'][style*='display: none;']");
           } else {
-            btn = document.querySelector<HTMLButtonElement>("button[class=\"wf-button wf-split-button__main wf-button--primary\"]");
+            btn = findSubmitButton();
           }
           btn!.click();
         } else {

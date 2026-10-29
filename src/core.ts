@@ -1,6 +1,6 @@
 import { BaseSchema, IDBStoreConnection } from "./idb";
 import { ApiResult, DiscordUserLink, PostBody, Responses } from "./types";
-import { untilTruthy, cyrb53, iterObject, makeChildNode, Logger } from "./utils";
+import { untilTruthy, cyrb53, iterObject, makeChildNode, Logger, uwtPageWin, uwtPageXHR } from "./utils";
 import { CorePluginAPI } from "./scripts/uwt-core";
 
 import ImportIcon from "../assets/import.svg";
@@ -28,10 +28,17 @@ export const initializeUserHash = async () => {
   if (userHash !== 0) {
     throw Error("Cannot reconfigure user hash");
   } else {
-    const props = await makeRequest("GET", "/api/v1/vault/properties");
-    userHash = props.socialProfile.email ? cyrb53(props.socialProfile.email) : 0;
+    let props: Partial<Responses["GET"]["/api/v1/vault/properties"]> = {};
+    try {
+      props = (await makeRequest("GET", "/api/v1/vault/properties")) || {};
+    } catch (e) {
+      console.warn("[W]", "[unified-wf-tools]", "[patch]", "Could not read /api/v1/vault/properties; continuing with defaults:", e);
+    }
+    const email = props.socialProfile && props.socialProfile.email;
+    // a non-zero fallback keeps per-user storage working when the profile cannot be read
+    userHash = email ? cyrb53(email) : (userHash || 1);
     userName = props.socialProfile?.username ?? "Agent";
-    language = props.language;
+    language = props.language || "en";
     return userHash;
   }
 };
@@ -385,6 +392,159 @@ const getIDBInstance = (objectStoreName: string, version?: number) => new Promis
   };
 });
 
+// ---- redesign patch: hook the PAGE's own XMLHttpRequest/fetch, not the userscript sandbox's copy ----
+// With @grant GM.* the script runs in the script manager's sandbox, whose XMLHttpRequest/fetch are
+// separate from the ones Wayfarer uses -- so Wayfarer's own requests never reached the hooks.
+// (uwtPageWin / uwtPageXHR / uwtGoogle live in utils.ts so that every script can use them.)
+console.log("[I]", "[unified-wf-tools]", "[patch]", "hooking the page's own request functions:", uwtPageWin !== window ? "via unsafeWindow" : "same window (no unsafeWindow)");
+
+/** Path of a request URL without origin / query string / trailing slash. */
+export function uwtPath(u: string | URL): string {
+  try {
+    const x = new URL(String(u), location.href);
+    const path = x.pathname.length > 1 && x.pathname.endsWith("/") ? x.pathname.slice(0, -1) : x.pathname;
+    return x.origin === location.origin ? path : String(u);
+  } catch {
+    return String(u);
+  }
+}
+
+// ---- redesign patch: remember API responses that arrive before the addons have registered ----
+// The redesigned site requests its data very early (e.g. the review). Addons only register their
+// listeners after the page has loaded, so without this they would never see the first response.
+const uwtBuffered: Record<string, string> = {};
+let uwtAddonsReady = false;
+console.log("[I]", "[unified-wf-tools]", "[patch]", "BUILD redesign10 loaded; readyState =", document.readyState, "; time since page start (ms) =", Math.round(performance.now()));
+
+/** Called by the entry point once all addons are registered; stops buffering and frees memory. */
+export const uwtMarkAddonsReady = () => {
+  uwtAddonsReady = true;
+  for (const k of Object.keys(uwtBuffered)) delete uwtBuffered[k];
+};
+
+function uwtBufferResponse(method: string, url: string | URL, text: string | undefined) {
+  if (uwtAddonsReady || String(method).toUpperCase() !== "GET") return;
+  const path = uwtPath(url);
+  if (!/^\/api\/v1\/vault\//.test(path) || typeof text !== "string" || text.length > 8000000) return;
+  uwtBuffered["GET " + path] = text;
+  console.log("[I]", "[unified-wf-tools]", "[patch]", "buffered early response:", path, text.length, "chars");
+}
+
+function uwtReplayBuffered(method: string, url: string, callback: (result: any) => void) {
+  const text = uwtBuffered[String(method).toUpperCase() + " " + url];
+  if (typeof text !== "string") return;
+  console.log("[I]", "[unified-wf-tools]", "[patch]", "replaying early response to an addon:", method, url);
+  setTimeout(() => {
+    try {
+      const json = JSON.parse(text);
+      if (json && !json.captcha) callback(json.result);
+    } catch (e) {
+      new Logger("core:toolbox").error(e);
+    }
+  }, 0);
+}
+
+// ---- redesign patch: the new Wayfarer site may load data with fetch() instead of XHR ----
+interface FetchHandler {
+  method?: string,
+  url: string,
+  /** Return false to block the request. */
+  filter?: (bodyText: string | undefined) => boolean,
+  /** Rewrites the `result` of the response. */
+  manipulate?: (result: any) => any,
+  /** Observes the parsed response (and the request body, if any). */
+  onResponse?: (json: ApiResult<any>, bodyText: string | undefined) => void,
+}
+const uwtFetchHandlers: FetchHandler[] = [];
+let uwtFetchHookInstalled = false;
+const uwtTransportSeen: Record<string, boolean> = {};
+
+/** Logs once per transport (XHR / fetch) which one the site really uses. */
+export const uwtTransportsSeen = () => Object.keys(uwtTransportSeen);
+
+function uwtNoteTransport(kind: string, url: string | URL) {
+  if (uwtTransportSeen[kind] || !/\/api\/v1\/vault\//.test(String(url))) return;
+  uwtTransportSeen[kind] = true;
+  console.log("[I]", "[unified-wf-tools]", "[patch]", `Wayfarer API traffic seen via ${kind}:`, String(url));
+}
+
+function uwtInstallFetchHook() {
+  if (uwtFetchHookInstalled || typeof uwtPageWin.fetch !== "function") return;
+  uwtFetchHookInstalled = true;
+  const originalFetch = uwtPageWin.fetch;
+  uwtPageWin.fetch = async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    let url = "", method = "GET";
+    let bodyText: string | undefined;
+    try {
+      const isReq = typeof Request !== "undefined" && input instanceof Request;
+      url = isReq ? input.url : String(input);
+      method = String((init && init.method) || (isReq && input.method) || "GET").toUpperCase();
+      const u = new URL(url, location.href);
+      url = u.origin === location.origin ? u.pathname : url;
+      uwtNoteTransport("fetch", url);
+      if (init && typeof init.body === "string") bodyText = init.body;
+      else if (isReq && method !== "GET" && method !== "HEAD") bodyText = await input.clone().text();
+    } catch { /* never break a request */ }
+    const mine = uwtFetchHandlers.filter(h => h.url === url && (!h.method || h.method === method));
+    for (const h of mine) {
+      if (h.filter) {
+        let allowed = true;
+        try { allowed = h.filter(bodyText); } catch { allowed = true; }
+        if (!allowed) {
+          new Logger("core:toolbox").warn(`A Wayfarer Tools addon blocked a ${method} request to ${url}!`);
+          throw new TypeError("Request blocked by Wayfarer Tools");
+        }
+      }
+    }
+    let response: Response = await originalFetch.apply(this, arguments as unknown as [RequestInfo | URL, RequestInit?]);
+    if (!uwtAddonsReady && method === "GET" && /^\/api\/v1\/vault\//.test(url)) {
+      try { uwtBufferResponse(method, url, await response.clone().text()); } catch { /* ignore */ }
+    }
+    const reading = mine.filter(h => !h.filter);
+    if (!reading.length) return response;
+    try {
+      let text = await response.clone().text();
+      for (const h of reading) {
+        try {
+          const json: ApiResult<any> = JSON.parse(text);
+          if (!json || json.captcha) continue;
+          if (h.manipulate) {
+            json.result = h.manipulate(json.result);
+            text = JSON.stringify(json);
+            response = new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers });
+          } else if (h.onResponse) {
+            h.onResponse(json, bodyText);
+          }
+        } catch (e) {
+          new Logger("core:toolbox").error(e);
+        }
+      }
+    } catch { /* unreadable body -- leave the response alone */ }
+    return response;
+  };
+}
+
+(function (open) {
+  // note which transport the site really uses (shown once in the console)
+  const seenUrls = new Set<string>();
+  uwtPageXHR.prototype.open = function (this: XMLHttpRequest, m: string, u: string | URL) {
+    uwtNoteTransport("XMLHttpRequest", u);
+    if (/\/api\/v1\/vault\//.test(String(u)) && !seenUrls.has(m + " " + u) && seenUrls.size < 60) {
+      seenUrls.add(m + " " + u);
+      console.log("[I]", "[unified-wf-tools]", "[patch]", "API request:", m, String(u));
+    }
+    if (!uwtAddonsReady && /\/api\/v1\/vault\//.test(String(u))) {
+      this.addEventListener("load", function (this: XMLHttpRequest) {
+        try {
+          uwtBufferResponse(m, u, typeof this.response === "string" ? this.response : (this.responseType === "" || this.responseType === "text" ? this.responseText : undefined));
+        } catch { /* ignore */ }
+      }, false);
+    }
+    return open.apply(this, arguments as any);
+  } as typeof XMLHttpRequest.prototype.open;
+})(uwtPageXHR.prototype.open);
+uwtInstallFetchHook();
+
 const getNotificationDiv = () => {
   const div = document.getElementById("uwftcore-notifications");
   if (div) return div;
@@ -448,12 +608,17 @@ function makeRequest<Tm extends keyof Responses, Tu extends keyof Responses[Tm] 
       req.setRequestHeader("Accept", "application/json, text/plain, */*");
       req.setRequestHeader("x-angular", "");
       if (xsrfCookie) req.setRequestHeader("X-CSRF-TOKEN", xsrfCookie);
+      req.addEventListener("error", () => reject(new Error("Network error")));
       req.addEventListener("load", () => {
-        const data = JSON.parse(req.responseText).result;
-        if (req.status >= 200 && req.status < 400) {
-          resolve(data);
-        } else {
-          reject(new Error(`Error response code ${req.status}: ${req.responseText}`));
+        try {
+          const data = JSON.parse(req.responseText).result;
+          if (req.status >= 200 && req.status < 400) {
+            resolve(data);
+          } else {
+            reject(new Error(`Error response code ${req.status}: ${req.responseText}`));
+          }
+        } catch {
+          reject(new Error(`Unreadable response (status ${req.status}): ${String(req.responseText).slice(0, 200)}`));
         }
       });
       if (typeof body !== "undefined") {
@@ -505,14 +670,14 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
 
   public interceptOpen(method: string, url: string, callback: (e: Event) => void) {
     (function (open) {
-      XMLHttpRequest.prototype.open = function (m, u) {
-        if (u === url && m == method) {
+      uwtPageXHR.prototype.open = function (m, u) {
+        if (uwtPath(u) === url && String(m).toUpperCase() === String(method).toUpperCase()) {
           this.addEventListener("load", callback, false);
         }
         const args: any = arguments;
         open.apply(this, args);
       };
-    })(XMLHttpRequest.prototype.open);
+    })(uwtPageXHR.prototype.open);
   }
 
   public interceptOpenJson<Tm extends keyof Responses, Tu extends keyof Responses[Tm]>(method: Tm, url: Tu, callback: (obj: Responses[Tm][Tu]) => void) {
@@ -530,6 +695,8 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
       }
     }
     this.interceptOpen(method, url, handle);
+    uwtFetchHandlers.push({ method, url, onResponse: (json) => callback(json.result) });
+    uwtReplayBuffered(method, url, callback);
   }
 
   public manipulateOpenJson<Tm extends keyof Responses, Tu extends keyof Responses[Tm]>(method: Tm, url: Tu, callback: (obj: Responses[Tm][Tu]) => Responses[Tm][Tu]) {
@@ -551,26 +718,27 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
       }
     }
     this.interceptOpen(method, url, handle);
+    uwtFetchHandlers.push({ method, url, manipulate: (result) => callback(result) });
   }
 
   public interceptSend(url: string, callback: (data: string, request: XMLHttpRequest, response: Event) => void) {
     (function (send) {
-      XMLHttpRequest.prototype.send = function (body: string) {
+      uwtPageXHR.prototype.send = function (body: string) {
         this.addEventListener("load", function (e: Event) {
-          if (this.responseURL === window.origin + url) {
+          if (uwtPath(this.responseURL) === url) {
             callback(body, this, e);
           }
         }, false);
         const args: any = arguments;
         send.apply(this, args);
       };
-    })(XMLHttpRequest.prototype.send);
+    })(uwtPageXHR.prototype.send);
   }
 
   public filterSend(method: string, url: string, filter: (data: string, request: XMLHttpRequest) => boolean) {
     const addonId = this.#addon.id;
     (function (open) {
-      XMLHttpRequest.prototype.open = function (m, u) {
+      uwtPageXHR.prototype.open = function (m, u) {
         this._uwtTools = {
           method: m,
           url: u,
@@ -578,10 +746,10 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
         const args: any = arguments;
         open.apply(this, args);
       };
-    })(XMLHttpRequest.prototype.open);
+    })(uwtPageXHR.prototype.open);
     (function (send) {
-      XMLHttpRequest.prototype.send = function (body: string) {
-        if (this._uwtTools.method !== method || this._uwtTools.url !== url || filter(body, this)) {
+      uwtPageXHR.prototype.send = function (body: string) {
+        if (!this._uwtTools || String(this._uwtTools.method).toUpperCase() !== String(method).toUpperCase() || uwtPath(this._uwtTools.url) !== url || filter(body, this)) {
           const args: any = arguments;
           send.apply(this, args);
         } else {
@@ -589,7 +757,7 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
           logger.warn(`Wayfarer Tools addon ${addonId} blocked a ${method} request to ${url}!`);
         }
       };
-    })(XMLHttpRequest.prototype.send);
+    })(uwtPageXHR.prototype.send);
   }
 
   public interceptSendJson<Tu extends keyof PostBody & keyof Responses["POST"]>(url: Tu, callback: (sent: PostBody[Tu], received: Responses["POST"][Tu]) => void) {
@@ -607,6 +775,13 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
       }
     }
     this.interceptSend(url, handle);
+    uwtFetchHandlers.push({
+      url,
+      onResponse: (jRecv, bodyText) => {
+        if (typeof bodyText !== "string") return;
+        callback(JSON.parse(bodyText), jRecv.result);
+      },
+    });
   }
 
   public filterSendJson<Tm extends keyof Responses, Tu extends keyof PostBody & keyof Responses[Tm]>(method: Tm, url: Tu, callback: (sent: PostBody[Tu]) => boolean) {
@@ -621,6 +796,7 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
       }
     }
     this.filterSend(method, url, handle);
+    uwtFetchHandlers.push({ method, url, filter: (bodyText) => (typeof bodyText === "string" ? handle(bodyText) : true) });
   }
 
   public makeRequest = makeRequest;
@@ -745,8 +921,11 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
   }
 
   public get l10n(): Record<string, string> {
-    const i18n = JSON.parse(localStorage["@transloco/translations"]);
-    return i18n[language];
+    let i18n: Record<string, Record<string, string>> = {};
+    try {
+      i18n = JSON.parse(localStorage["@transloco/translations"] || "{}");
+    } catch { /* fall back to empty translations */ }
+    return i18n[language] || {};
   }
 
   public i18nPrefixResolver(prefix: string) {
@@ -827,23 +1006,27 @@ export const initializeAllAddons = () => {
   for (const addon of addons) {
     if (toInitialize.includes(addon.id)) {
       logger.info(`Initializing addon ${addon.id}...`);
-      const api = addon.initialize(
-        new AddonToolbox(addon),
-        new Logger(`addon:${addon.id}`),
-        new AddonSettings(
-          localStorage,
-          addon.id,
-          addon.defaultConfig,
-          (key, opts) => {
-            if (!(addon.id in options)) {
-              options[addon.id] = { addon, options: {} };
-            }
-            options[addon.id].options[key] = opts;
-          },
-        ),
-      );
-      if (api) {
-        ADDON_APIS[addon.id as keyof typeof ADDON_APIS] = api;
+      try {
+        const api = addon.initialize(
+          new AddonToolbox(addon),
+          new Logger(`addon:${addon.id}`),
+          new AddonSettings(
+            localStorage,
+            addon.id,
+            addon.defaultConfig,
+            (key, opts) => {
+              if (!(addon.id in options)) {
+                options[addon.id] = { addon, options: {} };
+              }
+              options[addon.id].options[key] = opts;
+            },
+          ),
+        );
+        if (api) {
+          ADDON_APIS[addon.id as keyof typeof ADDON_APIS] = api;
+        }
+      } catch (err) {
+        logger.error(`Addon ${addon.id} failed to initialize and was skipped:`, err);
       }
     }
   }
@@ -854,18 +1037,71 @@ export const initializeAllAddons = () => {
       "GET", "/api/v1/vault/settings",
       renderEditors(Object.values(options)),
     );
+    uwtAddSettingsButton(Object.values(options));
   }
   logger.info("Addon initialization done.");
 };
 
 const renderEditors = (options: AddonOptionsEntry[]) => async () => {
-  const ref = await untilTruthy(() => document.querySelector("app-settings"));
+  // old settings page only; the redesigned site has no <app-settings> (see uwtAddSettingsButton)
+  const ref = document.querySelector("app-settings");
+  if (!ref) return;
   const box = makeChildNode(ref, "div");
   box.classList.add("max-w-md");
   box.id = "uwftoolsMainPluginSettingsPane";
   const header = makeChildNode(box, "h3", "Plugin Settings");
   header.classList.add("wf-page-header");
+  uwtFillSettingsPane(box, options);
+};
 
+// ---- redesign patch: the redesigned site has no settings page to hook, so show a floating button ----
+function uwtAddSettingsButton(options: AddonOptionsEntry[]) {
+  if (document.getElementById("uwt-settings-button")) return;
+  if (!document.getElementById("uwt-settings-style")) {
+    const st = document.createElement("style");
+    st.id = "uwt-settings-style";
+    st.textContent = `
+      #uwt-settings-button{position:fixed;left:16px;bottom:16px;z-index:99990;width:40px;height:40px;border-radius:50%;
+        border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;
+        align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}
+      #uwt-settings-button:hover{opacity:1}
+      .uwt-settings-modal{background:#fff !important;color:#111827 !important;font-size:15px}
+      .uwt-settings-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}
+      .uwt-settings-modal .uwt-settings-close{position:absolute;top:8px;right:14px;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}
+      .uwt-settings-modal .uwt-settings-close:hover{opacity:1}
+      .uwt-settings-modal h2{font-size:1.4rem;font-weight:bold;margin-bottom:.8rem}
+      .uwt-settings-modal .settings-item{margin-bottom:1.2rem;padding-bottom:.6rem;border-bottom:1px solid rgba(128,128,128,.3)}
+      .uwt-settings-modal .settings-item__header{font-weight:bold;margin-bottom:.4rem}
+      .uwt-settings-modal input[type=text],.uwt-settings-modal input[type=number],.uwt-settings-modal select{
+        border:1px solid #9ca3af;border-radius:4px;padding:2px 6px;background:#fff;color:#111827}`;
+    document.head.appendChild(st);
+  }
+  const btn = document.createElement("button");
+  btn.id = "uwt-settings-button";
+  btn.type = "button";
+  btn.title = "Wayfarer Tools settings";
+  btn.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"3\"></circle><path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"></path></svg>";
+  btn.addEventListener("click", async () => {
+    const { container, dismiss } = await new AddonToolbox({} as any).createModal("uwt-settings-modal");
+    if (document.documentElement.classList.contains("dark") || document.body.classList.contains("dark")) {
+      container.classList.add("uwt-dark");
+    }
+    container.style.width = "min(900px, calc(100vw - 50px))";
+    container.style.height = "min(720px, calc(100vh - 50px))";
+    container.style.maxHeight = "none";
+    const close = makeChildNode(container, "button", "\u00d7");
+    close.className = "uwt-settings-close";
+    close.addEventListener("click", dismiss);
+    makeChildNode(container, "h2", "Wayfarer Tools settings");
+    makeChildNode(container, "p", "Changes are saved immediately. Reload the page for newly enabled or disabled addons to take effect.").style.marginBottom = "1rem";
+    const box = makeChildNode(container, "div");
+    box.id = "uwftoolsMainPluginSettingsPane";
+    uwtFillSettingsPane(box, options);
+  });
+  document.body.appendChild(btn);
+}
+
+function uwtFillSettingsPane(box: HTMLElement, options: AddonOptionsEntry[]) {
   for (const entry of options) {
     const entryBox = makeChildNode(box, "div");
     entryBox.classList.add("settings__item");
@@ -899,4 +1135,4 @@ const renderEditors = (options: AddonOptionsEntry[]) => async () => {
       });
     }
   }
-};
+}

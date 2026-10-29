@@ -17,7 +17,7 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 import { register } from "../core";
-import { untilTruthy, insertAfter, iterObject, makeChildNode, readGeofences } from "../utils";
+import { untilTruthy, insertAfter, iterObject, makeChildNode, readGeofences, uwtReviewMapSelectors } from "../utils";
 import { AnyReview, AnyContribution, Showcase, SubmissionsResult, Zone, ContributionType } from "../types";
 
 import proj4 from "proj4";
@@ -582,18 +582,42 @@ const injectNominations = async (result: SubmissionsResult) => {
   });
 };
 
+// redesign: the review maps are found through Wayfarer's data-testid markers (as Map Mods does),
+// and the buttons go below the map's whole box (climbing out of clipping / row layouts).
+// The selectors themselves live in utils.ts because review-map-mods uses them as well.
+const uwtFindReviewMapBox = (type: AnyReview["type"]): HTMLElement | null => {
+  const el = document.querySelector<HTMLElement>(uwtReviewMapSelectors[type] || "[data-testid=\"base-map-container\"]")
+    || document.querySelector<HTMLElement>("[data-testid=\"base-map-container\"]");
+  if (!el) return null;
+  let anchor: HTMLElement = el.closest<HTMLElement>("[data-testid=\"base-map-root\"]") || el;
+  for (let i = 0; i < 6; i++) {
+    const parent = anchor.parentElement;
+    if (!parent || parent === document.body) break;
+    const cs = getComputedStyle(parent);
+    const clips = [cs.overflow, cs.overflowX, cs.overflowY].some(v => v && v !== "visible");
+    const mapSized = parent.offsetHeight <= anchor.offsetHeight + 24;
+    if (!clips && !mapSized) break;
+    anchor = parent;
+  }
+  for (let i = 0; i < 5; i++) {
+    const parent = anchor.parentElement;
+    if (!parent || parent === document.body) break;
+    const cs = getComputedStyle(parent);
+    const isRow = /flex/.test(cs.display) && /^row/.test(cs.flexDirection);
+    if (!isRow && cs.display !== "grid") break;
+    anchor = parent;
+  }
+  return anchor;
+};
+
 const injectReview = async (candidate: AnyReview) => {
-  if (candidate.type === "NEW") {
-    const ref = await untilTruthy(() => document.getElementById("check-duplicates-card"));
-    const box = await addOpenButtons(ref.firstChild!, candidate);
-    box.classList.add("uwtoi-dupe-map");
-  } else if (candidate.type === "EDIT") {
-    const ref = await untilTruthy(() => document.querySelector(".review-edit-info .review-edit-info__info"));
-    await addOpenButtons(ref, candidate);
-  } else if (candidate.type === "PHOTO") {
-    const pref = await untilTruthy(() => document.querySelector("app-review-photo"));
-    const ref = await untilTruthy(() => pref.querySelector(".review-photo__info > div > div:nth-child(2)"));
-    await addOpenButtons(ref, candidate);
+  for (const old of document.querySelectorAll(".uwtoi-review-box")) old.remove();
+  const ref = await untilTruthy(() => uwtFindReviewMapBox(candidate.type));
+  const box = await addOpenButtons(ref, candidate);
+  box.classList.add("uwtoi-review-box");
+  // a newer review may have inserted its own box meanwhile -- keep only this (newest) one
+  for (const old of document.querySelectorAll(".uwtoi-review-box")) {
+    if (old !== box) old.remove();
   }
 };
 

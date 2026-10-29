@@ -390,7 +390,7 @@ export class S2Overlay {
   drawCell(map: google.maps.Map, cell: S2.S2Cell, style: DrawnS2Grid) {
     const cellCorners: S2.L.LatLng[] = cell.getCornerLatLngs();
     cellCorners[4] = cellCorners[0]; // Loop it
-    const polyline = new google.maps.Polyline({
+    const polyline = new (uwtGoogle()!.maps.Polyline)({
       path: cellCorners,
       geodesic: true,
       strokeColor: style.color,
@@ -411,7 +411,7 @@ export class S2Overlay {
   isCellOnScreen(mapBounds: google.maps.LatLngBounds, cell: S2.S2Cell) {
     const corners = cell.getCornerLatLngs();
     for (let i = 0; i < corners.length; i++) {
-      if (mapBounds.intersects(new google.maps.LatLngBounds(corners[i]))) {
+      if (mapBounds.intersects(new (uwtGoogle()!.maps.LatLngBounds)(corners[i]))) {
         return true;
       }
     }
@@ -454,3 +454,23 @@ export class Logger {
     console.error("[E]", "[unified-wf-tools]", `[${this.#subsystem}]`, ...data);
   };
 }
+
+// ---- redesign patch: the PAGE's window, not the userscript sandbox's ----
+// With @grant GM.* the script runs in the script manager's sandbox, whose XMLHttpRequest/fetch/google
+// are separate from the ones Wayfarer uses.
+export const uwtPageWin: Window & typeof globalThis = (typeof unsafeWindow !== "undefined" && unsafeWindow)
+  ? (unsafeWindow as unknown as Window & typeof globalThis)
+  : window;
+export const uwtPageXHR: typeof XMLHttpRequest = uwtPageWin.XMLHttpRequest;
+export const uwtGoogle = (): typeof google | undefined =>
+  (uwtPageWin as any).google || (typeof google !== "undefined" ? google : undefined);
+
+/**
+ * redesign: where the Google maps of each review type live in the React-based review pages. Used by
+ * open-in (to place its buttons) and review-map-mods (to find the map).
+ */
+export const uwtReviewMapSelectors: Record<"NEW" | "EDIT" | "PHOTO", string> = {
+  NEW: "[data-testid=\"review-new-check-duplicates-slot\"] [data-testid=\"base-map-container\"]",
+  EDIT: "[data-testid=\"review-edit-live-map\"] [data-testid=\"base-map-container\"]",
+  PHOTO: "[data-testid=\"review-photo-flow\"] [data-testid=\"base-map-container\"]",
+};

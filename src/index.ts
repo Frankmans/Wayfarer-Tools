@@ -1,5 +1,5 @@
 import { scriptInfo } from "./constants";
-import { initializeAllAddons, initializeUserHash } from "./core";
+import { initializeAllAddons, initializeUserHash, uwtMarkAddonsReady } from "./core";
 import { domLoaded, Logger } from "./utils";
 
 import uwfToolsCore from "./scripts/uwt-core";
@@ -71,10 +71,17 @@ function run() {
     logger.info(`Initializing ${scriptInfo.name} v${scriptInfo.version}...`);
     initializeUserHash().then((userHash: number) => {
       logger.info(`Initializing Wayfarer Tools for user hash ${userHash}`);
-      for (const addon of availableAddons) addon();
+      for (const addon of availableAddons) {
+        try {
+          addon();
+        } catch (err) {
+          logger.error("Addon registration failed:", err);
+        }
+      }
       logger.info("Addons registered.");
       initializeAllAddons();
-    }).catch(logger.error);
+      setTimeout(uwtMarkAddonsReady, 15000);
+    }).catch((err) => logger.error("Initialization failed:", err));
   }
   catch(err) {
     logger.error("Fatal error:", err);

@@ -17,8 +17,8 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 import { CheckboxEditor, ColorInputEditor, NumericInputEditor, register, SelectBoxEditor } from "../core";
-import { untilTruthy, haversine, DrawnS2Grid, addS2Overlay } from "../utils";
-import { AnyReview } from "../types";
+import { haversine, DrawnS2Grid, S2Overlay, uwtGoogle, uwtPageWin, uwtReviewMapSelectors } from "../utils";
+import { AnyReview, NewReview } from "../types";
 
 import "./extended-stats.css";
 
@@ -27,8 +27,6 @@ interface LatLngLiteral {
   lat: number,
   lng: number,
 }
-
-const RESET_SELECTOR = "#check-duplicates-card .wf-review-card__header button";
 
 export default () => {
   register()({
@@ -114,107 +112,95 @@ export default () => {
         editor: new NumericInputEditor({ min: 0 }),
       });
 
+      // ---- redesign: Wayfarer's review pages are React now. The Google Map is read from the
+      // map container's React fiber (the same way Map Mods does it); the Angular internals this
+      // addon used (__ngContext__, nia-map, marker drag hooks) no longer exist.
       let pano: google.maps.StreetViewPanorama | null = null;
-      let closeCircle: google.maps.Circle | null = null;
-      let moveCircle: google.maps.Circle | null = null;
-      let listenSvFocus = false;
+      let rmmToken = 0;
+      const rmm: {
+        circles: google.maps.Circle[],
+        overlay: S2Overlay | null,
+        idleListener: google.maps.MapsEventListener | null,
+      } = { circles: [], overlay: null, idleListener: null };
 
-      document.addEventListener("focusin", () => {
-        if (listenSvFocus && document.activeElement!.classList.contains("mapsConsumerUiSceneInternalCoreScene__root")) {
-          listenSvFocus = false;
-          document.querySelector("mat-sidenav-content")?.scrollTo(0, 0);
-        }
-      });
+      const pdoc = () => uwtPageWin.document;
 
-      const addMapMods = async (candidate: AnyReview) => {
-        if (typeof google === "undefined") {
-          logger.info("addMapMods waiting for google");
-          setTimeout(() => addMapMods(candidate), 200);
-          return;
-        }
-
-        let mapCtx: any | null = null;
-        if (candidate.type === "NEW") {
-          const gmap: any = await untilTruthy(() => document.querySelector("#check-duplicates-card nia-map"));
-          mapCtx = gmap.__ngContext__[gmap.__ngContext__.length - 1];
-          await modifyNewReviewMap(gmap, candidate, mapCtx);
-        } else if (candidate.type === "EDIT" && candidate.locationEdits.length > 0) {
-          const gmap: any = await untilTruthy(() => document.querySelector("app-select-location-edit"));
-          mapCtx = gmap.__ngContext__[gmap.__ngContext__.length - 1].niaMap;
-        }
-
-        if (mapCtx !== null) {
-          logger.info(mapCtx);
-          const map = mapCtx.componentRef.map as google.maps.Map;
-          const grids = <DrawnS2Grid[]>[];
-          if (config.get("s2Grid1Enabled")) grids.push({
-            level: config.get("s2Grid1Level"),
-            color: config.get("s2Grid1Color"),
-            opacity: config.get("s2Grid1Opacity"),
-            thickness: config.get("s2Grid1Thickness"),
-          });
-          if (config.get("s2Grid2Enabled")) grids.push({
-            level: config.get("s2Grid2Level"),
-            color: config.get("s2Grid2Color"),
-            opacity: config.get("s2Grid2Opacity"),
-            thickness: config.get("s2Grid2Thickness"),
-          });
-          if (grids.length) await addS2Overlay(map, grids);
-          if (config.get("renderCloseCircle")) drawCloseCircle(map, candidate);
-          void addLocationChangeBtnListener(map, mapCtx, candidate);
-          addLocationResetChangeBtnListener(map, mapCtx, candidate);
-        }
+      const rmmFindFiber = (el: any): any => {
+        const key = Object.getOwnPropertyNames(el || {}).find(k => k.startsWith("__reactFiber$"));
+        return key ? el[key] : null;
       };
+      const rmmRef = (ref: any) => (ref && typeof ref === "object" && "current" in ref) ? ref.current : null;
+      const rmmLooksLikeMap = (v: any): v is google.maps.Map =>
+        !!(v && typeof v.getCenter === "function" && typeof v.addListener === "function" && typeof v.getDiv === "function");
 
-      const addLocationChangeBtnListener = async (map: google.maps.Map, mapCtx: any, candidate: AnyReview) => {
-        const locationChangeBtn = await untilTruthy(() => document.querySelector("#check-duplicates-card nia-map ~ div button"));
-        locationChangeBtn.addEventListener("click", () => {
-          logger.info("Location change started");
-          if (config.get("renderCloseCircle")) drawCloseCircle(map, candidate);
-          if (config.get("renderMoveCircle")) drawMoveCircle(map, candidate);
-          setTimeout(() => addListenerToMarker(map, mapCtx), 500);
-        }, true);
-      };
-
-      const addLocationResetChangeBtnListener = (map: google.maps.Map, mapCtx: any, candidate: AnyReview) => {
-        const resetButton = document.querySelector(RESET_SELECTOR);
-        if (resetButton) {
-          resetButton.addEventListener("click", () => {
-            logger.info("Resetting location change");
-            map.setZoom(17);
-            if (config.get("renderCloseCircle")) drawCloseCircle(map, candidate);
-            if (config.get("renderMoveCircle")) drawMoveCircle(map, null);
-            void addLocationChangeBtnListener(map, mapCtx, candidate);
-            addLocationResetChangeBtnListener(map, mapCtx, candidate);
-          });
-        }
-      };
-
-      const addListenerToMarker = async (map: google.maps.Map, mapCtx: any) => {
-        const suggested = await untilTruthy(() => mapCtx.markers.suggested);
-        const wrapped = suggested.markerOnDrag;
-        suggested.markerOnDrag = function (t?: any) {
-          if (t && t.lat) {
-            if (config.get("renderCloseCircle")) drawCloseCircle(map, t);
+      const rmmResolveMap = (container: HTMLElement): google.maps.Map | null => {
+        let fiber = rmmFindFiber(container);
+        for (let depth = 0; fiber && depth < 16; depth++, fiber = fiber.return) {
+          const candidates = [
+            rmmRef(fiber.ref),
+            rmmRef(fiber.memoizedProps && fiber.memoizedProps.ref),
+            rmmRef(fiber.alternate && fiber.alternate.ref),
+            rmmRef(fiber.alternate && fiber.alternate.memoizedProps && fiber.alternate.memoizedProps.ref),
+          ];
+          const handle = candidates.find(h => !!h && typeof h.getMap === "function");
+          if (handle) {
+            const m = handle.getMap();
+            return rmmLooksLikeMap(m) ? m : null;
           }
-          wrapped(t);
-        };
+        }
+        return null;
       };
 
-      const drawMoveCircle = (map: google.maps.Map, ll: LatLngLiteral | null) => {
-        if (moveCircle !== null) moveCircle.setMap(null);
-        moveCircle = ll === null ? null : drawCircle(map, ll, "red", 2);
+      const rmmSelectors = {
+        NEW: uwtReviewMapSelectors.NEW,
+        EDIT: "[data-testid=\"review-edit-flow\"] .wf-review-card--map [data-testid=\"base-map-container\"]",
       };
 
-      const drawCloseCircle = (map: google.maps.Map, ll: LatLngLiteral) => {
-        if (closeCircle !== null) closeCircle.setMap(null);
-        closeCircle = drawCircle(map, ll, "blue", 22);
+      const rmmWaitForMap = async (type: "NEW" | "EDIT") => {
+        for (let i = 0; i < 120; i++) { // about 30 seconds
+          const container = pdoc().querySelector<HTMLElement>(rmmSelectors[type]);
+          if (container) {
+            const map = rmmResolveMap(container);
+            if (map) return { container, map };
+          }
+          await new Promise(r => setTimeout(r, 250));
+        }
+        return null;
       };
 
-      const drawCircle = (map: google.maps.Map, ll: LatLngLiteral, color: string, radius: number) =>
-        new google.maps.Circle({
+      const unloadPano = () => {
+        if (pano !== null) {
+          // Street View panorama must be unloaded to avoid it remaining alive in the background
+          // after each review is submitted (browser memory / tab crashes).
+          try { pano.setVisible(false); } catch { /* ignore */ }
+          pano = null;
+        }
+      };
+
+      // the map object is reused between reviews, so everything drawn is removed first
+      const rmmCleanup = () => {
+        for (const c of rmm.circles) {
+          try { c.setMap(null); } catch { /* ignore */ }
+        }
+        rmm.circles = [];
+        if (rmm.overlay) {
+          rmm.overlay.polyLines.forEach(l => { try { l.setMap(null); } catch { /* ignore */ } });
+          rmm.overlay.polyLines = [];
+          rmm.overlay = null;
+        }
+        if (rmm.idleListener) {
+          try { rmm.idleListener.remove(); } catch { /* ignore */ }
+          rmm.idleListener = null;
+        }
+        for (const el of pdoc().querySelectorAll(".uwtrmm-warning-box, .uwtrmm-close-warning")) el.remove();
+        unloadPano();
+      };
+
+      const drawCircle = (map: google.maps.Map, ll: LatLngLiteral, color: string, radius: number) => {
+        const G = uwtGoogle()!;
+        const c = new G.maps.Circle({
           map,
-          center: new google.maps.LatLng(ll.lat, ll.lng),
+          center: new G.maps.LatLng(ll.lat, ll.lng),
           radius,
           strokeColor: color,
           fillColor: color,
@@ -223,12 +209,28 @@ export default () => {
           fillOpacity: 0.2,
           clickable: false,
         });
+        rmm.circles.push(c);
+        return c;
+      };
 
-      const modifyNewReviewMap = async (ref: HTMLElement, candidate: AnyReview, mapCtx: any) => {
+      const bearing = (from: google.maps.LatLng, to: google.maps.LatLng) => {
+        const rad = (x: number) => x * Math.PI / 180;
+        const y = Math.sin(rad(to.lng() - from.lng())) * Math.cos(rad(to.lat()));
+        const x = Math.cos(rad(from.lat())) * Math.sin(rad(to.lat())) -
+          Math.sin(rad(from.lat())) * Math.cos(rad(to.lat())) * Math.cos(rad(to.lng() - from.lng()));
+        return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+      };
+
+      const insertBeforeMapBox = (container: HTMLElement, node: Node) => {
+        const box = container.closest("[data-testid=\"base-map-root\"]") || container;
+        box.parentElement!.insertBefore(node, box);
+      };
+
+      const modifyNewReviewMap = async (container: HTMLElement, map: google.maps.Map, candidate: AnyReview) => {
         logger.info("Modifying new review map");
-        const map = mapCtx.componentRef.map as google.maps.Map;
+        const G = uwtGoogle()!;
 
-        const nomLocation = new google.maps.LatLng(candidate.lat, candidate.lng);
+        const nomLocation = new G.maps.LatLng(candidate.lat, candidate.lng);
         map.setZoom(17);
         map.setCenter(nomLocation);
 
@@ -244,12 +246,11 @@ export default () => {
             motionTracking: false,
             imageDateControl: true,
           });
-          const svClient = new google.maps.StreetViewService;
+          const svClient = new G.maps.StreetViewService;
           try {
             const result = await svClient.getPanorama({ location: nomLocation, radius: 50 });
-            // listenSvFocus = true;
             const svLocation = result.data.location!.latLng!;
-            const heading = google.maps.geometry.spherical.computeHeading(svLocation, nomLocation);
+            const heading = bearing(svLocation, nomLocation);
             pano = sv;
             logger.info(`Setting Street View POV heading to ${heading}`);
             pano.setPov({ heading, pitch: 0 });
@@ -259,62 +260,85 @@ export default () => {
             const warningBox = document.createElement("p");
             warningBox.classList.add("uwtrmm-warning-box");
             warningBox.textContent = "No Street View found within a close radius";
-            ref.parentElement!.insertBefore(warningBox, ref);
+            insertBeforeMapBox(container, warningBox);
           }
         }
-        await addNearbyTooltips(candidate, mapCtx);
       };
 
-      const addNearbyTooltips = async (candidate: AnyReview, mapCtx: any) => {
-        const allMarkers = await untilTruthy(() => document.querySelectorAll("#check-duplicates-card nia-map agm-map div[role=button]"));
-        if (allMarkers.length <= 1) {
-          setTimeout(() => addNearbyTooltips(candidate, mapCtx), 500);
+      const addMapMods = async (candidate: AnyReview) => {
+        if (candidate.type !== "NEW" && !(candidate.type === "EDIT" && candidate.locationEdits && candidate.locationEdits.length > 0)) return;
+        const myToken = ++rmmToken;
+
+        for (let i = 0; i < 100 && !(uwtPageWin.google && uwtPageWin.google.maps); i++) {
+          await new Promise(r => setTimeout(r, 200));
+        }
+        if (!(uwtPageWin.google && uwtPageWin.google.maps)) {
+          logger.warn("Google Maps never became available; Review Map Mods skipped");
           return;
         }
-        const markers = Array.from(allMarkers).filter(m => window.getComputedStyle(m).width === "32px") as HTMLElement[];
 
-        let closeMarker = false;
-        const nearby = mapCtx.markers.nearby;
-        if (nearby.markers?.length) {
-          if (markers.length === nearby.markers.length) {
-            logger.info(`Adding tooltips to ${nearby.markers.length} markers`);
-            for (let i = 0; i < nearby.markers.length; i++) {
-              markers[i].title = nearby.markers[i].infoWindowComponentData.title;
-              if (!closeMarker) {
-                const distance = haversine(candidate.lat, candidate.lng, nearby.markers[i].latitude, nearby.markers[i].longitude);
-                if (distance <= 20) closeMarker = true;
-              }
-            }
-          } else {
-            logger.warn(`Cannot add tooltips to markers; there are ${nearby.markers.length} nearby POI, but only ${markers.length} markers on the map`);
+        const found = await rmmWaitForMap(candidate.type);
+        if (!found) {
+          logger.warn("Could not find the review map (no map container with a React map handle)");
+          return;
+        }
+        if (myToken !== rmmToken) return; // a newer review has started
+        const { container, map } = found;
+        rmmCleanup();
+
+        if (candidate.type === "NEW") await modifyNewReviewMap(container, map, candidate);
+        if (myToken !== rmmToken) return;
+
+        const grids = <DrawnS2Grid[]>[];
+        if (config.get("s2Grid1Enabled")) grids.push({
+          level: config.get("s2Grid1Level"),
+          color: config.get("s2Grid1Color"),
+          opacity: config.get("s2Grid1Opacity"),
+          thickness: config.get("s2Grid1Thickness"),
+        });
+        if (config.get("s2Grid2Enabled")) grids.push({
+          level: config.get("s2Grid2Level"),
+          color: config.get("s2Grid2Color"),
+          opacity: config.get("s2Grid2Opacity"),
+          thickness: config.get("s2Grid2Thickness"),
+        });
+        if (grids.length) {
+          const overlay = new S2Overlay();
+          grids.sort((x, y) => y.level - x.level);
+          for (const grid of grids) await overlay.drawCellGrid(map, grid);
+          if (myToken !== rmmToken) {
+            overlay.polyLines.forEach(l => l.setMap(null));
+            return;
           }
-        } else {
-          logger.info("No markers to add tooltips to");
+          rmm.overlay = overlay;
+          rmm.idleListener = map.addListener("idle", async () => {
+            await overlay.updateGrid(map, grids);
+          });
         }
 
-        if (closeMarker) {
-          const header = document.querySelector<HTMLElement>("body > app-root > app-wayfarer > div > mat-sidenav-container > mat-sidenav-content > div > app-review > wf-page-header > div > div:nth-child(1) > p > div");
-          if (header) {
-            header.textContent = "There is at least one waypoint within 20 meters of this nomination, check closely for duplicates!";
-            header.style.color = "red";
-          }
-        }
-      };
+        if (Number.isFinite(candidate.lat) && Number.isFinite(candidate.lng)) {
+          // 22 m: new Powerspots within this distance of another Wayspot are rejected
+          if (config.get("renderCloseCircle")) drawCircle(map, candidate, "blue", 22);
+          // 2 m: a moved location must be at least this far from the submitter's proposal
+          if (config.get("renderMoveCircle")) drawCircle(map, candidate, "red", 2);
 
-      const unloadPano = () => {
-        if (pano !== null) {
-          // Street View panorama must be unloaded to avoid it remaining alive in the background
-          // after each review is submitted. The additional photospheres pile up in browser memory
-          // and either slow down the browser, or crash the tab entirely. This was the root cause
-          // behind why reviews would slow down and eventually crash Firefox before Street View was
-          // removed by default in Wayfarer 5.2.
-          pano.setVisible(false);
-          pano = null;
+          // only NEW reviews declare nearbyPortals in the types, but read it defensively for any review
+          const nearbyPortals = (candidate as Partial<NewReview>).nearbyPortals;
+          const nearby = Array.isArray(nearbyPortals) ? nearbyPortals : [];
+          const tooClose = nearby.some(n => Number.isFinite(Number(n.lat)) && Number.isFinite(Number(n.lng))
+            && haversine(candidate.lat, candidate.lng, Number(n.lat), Number(n.lng)) <= 20);
+          if (tooClose) {
+            const warn = document.createElement("p");
+            warn.className = "uwtrmm-close-warning";
+            warn.style.cssText = "color:red;font-weight:bold;margin:6px 0";
+            warn.textContent = "There is at least one waypoint within 20 meters of this nomination, check closely for duplicates!";
+            insertBeforeMapBox(container, warn);
+          }
         }
       };
 
       toolbox.interceptOpenJson("GET", "/api/v1/vault/review", addMapMods);
-      toolbox.interceptSendJson("/api/v1/vault/review", unloadPano);
+      toolbox.interceptSendJson("/api/v1/vault/review", rmmCleanup);
     },
   });
 };
