@@ -1,6 +1,5 @@
 import { CheckboxEditor, register } from "../core";
-import { untilTruthy, makeChildNode } from "../utils";
-import { UserSettings } from "../types";
+import { makeChildNode } from "../utils";
 import { StoredEmail } from "../email/types";
 
 import "./uwt-core.css";
@@ -35,18 +34,9 @@ export default () => {
 
       let reloadNotified = false;
 
-      const renderOprtSettings = async (_data: UserSettings) => {
-        const ref = await untilTruthy(() => document.querySelector("app-settings"));
-        const box = document.createElement("div");
-        box.classList.add("max-w-md");
-        const mainSettings = document.getElementById("uwftoolsMainPluginSettingsPane");
-        if (mainSettings) {
-          ref.insertBefore(box, mainSettings);
-        } else {
-          ref.appendChild(box);
-        }
-        const header = makeChildNode(box, "h3", "Unified Wayfarer Tools");
-        header.classList.add("wf-page-header");
+      // redesign: the old settings page (app-settings) is gone. The list of active plugins is now the
+      // first section of the settings window opened with the gear button (bottom left).
+      const renderActivePlugins = (box: HTMLElement) => {
         const activeAddonsBox = makeChildNode(box, "div");
         activeAddonsBox.classList.add("settings__item");
         activeAddonsBox.classList.add("settings-item");
@@ -126,7 +116,7 @@ export default () => {
         using _ = await toolbox.openIDB("email", "readonly");
       };
 
-      toolbox.interceptOpenJson("GET", "/api/v1/vault/settings", renderOprtSettings);
+      toolbox.addSettingsSection(renderActivePlugins);
 
       if (config.get("externCompat")) {
         const publicApi = {

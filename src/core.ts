@@ -566,6 +566,9 @@ interface Importer {
   icon?: string,
 }
 
+// ---- redesign: addons can add sections (e.g. the list of active plugins) at the top of the settings window ----
+const settingsSections: ((box: HTMLElement) => void)[] = [];
+
 const sidebarItems: Record<string, SidebarMenuItem> = {};
 const importers: Importer[] = [];
 
@@ -818,6 +821,11 @@ class AddonToolbox<Tcfg, Tidb extends IDBStoreDeclaration<Tidb>, Tsess> {
       childList: true,
       subtree: true,
     });
+  }
+
+  /** Adds a section at the top of the Wayfarer Tools settings window (opened with the gear button). */
+  public addSettingsSection(render: (box: HTMLElement) => void) {
+    settingsSections.push(render);
   }
 
   public listAvailableAddons() {
@@ -1096,6 +1104,13 @@ function uwtAddSettingsButton(options: AddonOptionsEntry[]) {
     makeChildNode(container, "p", "Changes are saved immediately. Reload the page for newly enabled or disabled addons to take effect.").style.marginBottom = "1rem";
     const box = makeChildNode(container, "div");
     box.id = "uwftoolsMainPluginSettingsPane";
+    for (const render of settingsSections) {
+      try {
+        render(makeChildNode(box, "div"));
+      } catch (e) {
+        new Logger("core:settings").error(e);
+      }
+    }
     uwtFillSettingsPane(box, options);
   });
   document.body.appendChild(btn);
