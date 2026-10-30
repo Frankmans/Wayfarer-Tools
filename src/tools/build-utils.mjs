@@ -214,14 +214,21 @@ ${requireDirectives ? "\n" + requireDirectives : ""}
 `.split("\n").join("\r\n");
 };
 
+/**
+ * The userscript version: the version in package.json (bump it by hand when a release adds features,
+ * e.g. `npm version minor --no-git-tag-version`) followed by the number of commits on the current branch,
+ * e.g. `1.1.0.153`. The commit count goes up with every commit, so userscript managers see every
+ * rebuilt and committed userscript as an update. Needs no Git tags and no extra tools besides Git.
+ * @returns {Promise<string>}
+ */
 function getVersion() {
   return new Promise((res, rej) => {
-    exec("git describe --long --tags | sed 's/^v//;s/\\([^-]*-g\\)/r\\1/;s/-/./g'", (err, stdout, stderr) => {
+    exec("git rev-list --count HEAD", (err, stdout, stderr) => {
       if(err) {
-        console.error("\x1b[31mError while checking for last Git tag. Do you have Git installed?\x1b[0m\n", stderr);
+        console.error("\x1b[31mError while counting Git commits. Do you have Git installed?\x1b[0m\n", stderr);
         return rej(err);
       }
-      return res(String(stdout).replace(/\r?\n/gm, "").trim());
+      return res(`${pkg.version}.${String(stdout).replace(/\r?\n/gm, "").trim()}`);
     });
   });
 }

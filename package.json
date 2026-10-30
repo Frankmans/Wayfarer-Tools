@@ -1,7 +1,7 @@
 {
   "name": "unified-wayfarer-tools",
   "userscriptName": "Unified Wayfarer Tools",
-  "version": "0.0.0-dev",
+  "version": "1.1.0",
   "description": "Unofficial addons that add extra quality of life features to Scopely's project Wayfarer.",
   "main": "index.js",
   "type": "module",
