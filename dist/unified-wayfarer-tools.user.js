@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name              Unified Wayfarer Tools
 // @namespace         https://github.com/Frankmans/Wayfarer-Tools
-// @version           1.1.0.157
+// @version           1.1.0.158
 // @description       Unofficial addons that add extra quality of life features to Scopely's project Wayfarer.
 // @homepageURL       https://github.com/Frankmans/Wayfarer-Tools#readme
 // @supportURL        https://github.com/Frankmans/Wayfarer-Tools/issues
 // @license           GPL-3.0-only
 // @author            bilde2910
 // @copyright         bilde2910 (https://github.com/bilde2910)
-// @icon              https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/images/logo_48.png?b=df542e9
+// @icon              https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/images/logo_48.png?b=fd80b78
 // @match             https://wayfarer.scopely.com/*
 // @downloadURL       https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/dist/unified-wayfarer-tools.user.js
 // @updateURL         https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/dist/unified-wayfarer-tools.meta.js
@@ -16,7 +16,7 @@
 // @grant             GM.xmlHttpRequest
 // @grant             GM.openInTab
 // @noframes
-// @resource          geofences https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/geofences.json?b=df542e9
+// @resource          geofences https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/geofences.json?b=fd80b78
 // @require           https://cdn.jsdelivr.net/npm/@googlemaps/markerclusterer@2.6.2/dist/index.min.js
 // @require           https://cdn.jsdelivr.net/npm/proj4@2.20.0/dist/proj4.js
 // @require           https://cdn.jsdelivr.net/npm/ag-grid-community@34.3.1/dist/ag-grid-community.min.js
@@ -10216,6 +10216,11 @@ const STATUS_MAP = {
         label: "Withdrawn",
     },
 };
+const TAG_COLORS = {
+    accepted: "#08CA00",
+    queue: "#1E88E5",
+    rejected: "#E53935",
+};
 var contributionManagementLayout = () => {
     register()({
         id: "contribution-management-layout",
@@ -10227,7 +10232,7 @@ var contributionManagementLayout = () => {
             showSummaryOfEdits: true,
         },
         sessionData: {},
-        initialize: (toolbox, _logger, config) => {
+        initialize: (toolbox, logger, config) => {
             config.setUserEditable("showCurrentWayspotInfobox", {
                 label: "Display current Wayspot details and interactive map for edits",
                 editor: new CheckboxEditor(),
@@ -10236,154 +10241,162 @@ var contributionManagementLayout = () => {
                 label: "Display a summary of all edits for a given Wayspot",
                 editor: new CheckboxEditor(),
             });
-            const detectAppListItems = async (nominations) => {
-                const parentContainer = await untilTruthy(() => document.querySelector(".submissions"));
-                // Scan existing elements
-                const existingItems = parentContainer.querySelectorAll("app-submissions-list-item");
-                for (const item of existingItems)
-                    formatItem(item, nominations.submissions);
-                // Set up MutationObserver for new elements
-                const observer = new MutationObserver((mutations) => {
-                    for (const mutation of mutations) {
-                        for (const node of mutation.addedNodes) {
-                            if (node.nodeName === "APP-SUBMISSIONS-LIST-ITEM") {
-                                formatItem(node, nominations.submissions);
-                            }
+            // ---- redesign: the Contribution Management page markup (app-submissions-list-item and Angular's
+            // internal data) this addon used to rewrite is gone. The same information is now shown in a window
+            // opened with a button at the bottom left (next to the Review history button): all Wayspots you have
+            // edits or photos for, with the Wayspot's current details, a map, and a summary of your edits.
+            let nominations = null;
+            let mapSession = 0;
+            const makeTag = (tag) => {
+                const span = document.createElement("span");
+                span.className = `uwtcml-tag uwtcml-tag--${tag.style}`;
+                span.textContent = tag.label;
+                return span;
+            };
+            const tagFor = (data) => wasOverturned(data)
+                ? { style: "accepted", label: "Overturned" }
+                : STATUS_MAP[data.status];
+            const generateEditSummaryTable = (edits, type) => {
+                // Sort edits by date in descending order (most recent to oldest)
+                const sorted = [...edits].sort((a, b) => b.order - a.order);
+                const table = document.createElement("table");
+                table.classList.add("uwtcml-edit-summary-table");
+                for (const edit of sorted) {
+                    const content = (() => {
+                        switch (type) {
+                            case ContributionType.EDIT_TITLE: return edit.title;
+                            case ContributionType.EDIT_DESCRIPTION: return edit.description;
+                            case ContributionType.EDIT_LOCATION: return `${edit.lat}, ${edit.lng}`;
+                            default: return undefined;
                         }
-                    }
-                });
-                observer.observe(parentContainer, {
-                    childList: true,
-                    subtree: true,
-                });
-            };
-            const formatItem = (item, nominations) => {
-                const data = item.__ngContext__[22];
-                modifyPhoto(item, data);
-                if (data.type !== ContributionType.NOMINATION) {
-                    updateRejectionLabels(item, data);
+                    })();
+                    const row = table.insertRow();
+                    makeChildNode(row, "td", edit.day);
+                    makeChildNode(row, "td", content);
+                    makeChildNode(row, "td").appendChild(makeTag(tagFor(edit)));
                 }
-                item.addEventListener("click", () => {
-                    void interceptDetailsPane(data, nominations);
-                });
+                return table;
             };
-            const modifyPhoto = (item, data) => {
-                const imageElements = item.querySelectorAll("img");
-                if (imageElements.length > 1) {
-                    const selectedImage = imageElements[1];
-                    selectedImage.classList.add("uwtcml-list-image");
-                    if (data.type === "PHOTO") {
-                        selectedImage.src = data.imageUrl;
-                    }
-                }
-            };
-            const updateRejectionLabels = (item, data) => {
-                // Remove uwtcml-overturned class if already present
-                const overturnedTags = item.querySelectorAll(".uwtcml-overturned");
-                for (let i = overturnedTags.length - 1; i >= 0; i--)
-                    overturnedTags[i].remove();
-                // If the current Wayspot data matches the rejected edit data, mark it as "overturned".
-                if (wasOverturned(data)) {
-                    const nominationTagSet = item.querySelector("app-submission-tag-set");
-                    if (nominationTagSet) {
-                        const newTag = makeChildNode(nominationTagSet, "app-submission-tag");
-                        newTag.classList.add("mr-1", "uwtcml-overturned");
-                        const newTagContent = makeChildNode(newTag, "div");
-                        newTagContent.classList.add("submission-tag", "ng-star-inserted");
-                        const newSpan = makeChildNode(newTagContent, "span", "Overturned");
-                        newSpan.classList.add("submission-tag--accepted");
-                    }
-                }
-            };
-            const interceptDetailsPane = async (data, nominations) => {
-                const containers = document.querySelectorAll(".uwtcml-details-container");
-                for (let i = containers.length - 1; i >= 0; i--)
-                    containers[i].remove();
-                const summaries = document.querySelectorAll(".uwtcml-edits-summary");
-                for (let i = summaries.length - 1; i >= 0; i--)
-                    summaries[i].remove();
-                const detailsSections = document.querySelectorAll(".details-pane__section");
-                // Unhide things that may have been hidden on the Edits page
-                const hiddenItems = document.querySelectorAll(".uwtcml-hidden");
-                for (let i = hiddenItems.length - 1; i >= 0; i--) {
-                    hiddenItems[i].classList.remove(".uwtcml-hidden");
-                }
-                if (data.type === ContributionType.NOMINATION)
+            const addSatMap = async (mapDiv, poi, edits, session) => {
+                var _a;
+                // the page's own Google Maps API (not the userscript sandbox's view of the window) must be loaded
+                for (let i = 0; i < 40 && !((_a = uwtGoogle()) === null || _a === void 0 ? void 0 : _a.maps); i++)
+                    await new Promise(r => setTimeout(r, 250));
+                if (session !== mapSession)
                     return;
-                const detailsContainer = document.createElement("div");
-                detailsContainer.classList.add("uwtcml-details-container");
-                let mapDiv = null;
-                let infoboxDiv = null;
-                if (config.get("showCurrentWayspotInfobox")) {
-                    infoboxDiv = makeChildNode(detailsContainer, "div");
-                    infoboxDiv.classList.add("uwtcml-details-column");
-                    mapDiv = makeChildNode(detailsContainer, "div", "Location");
-                    mapDiv.classList.add("uwtcml-map-column");
-                    makeChildNode(infoboxDiv, "div", "Current Wayspot Details");
-                    const wayspotDetails = makeChildNode(infoboxDiv, "div");
-                    wayspotDetails.classList.add("uwtcml-wayspot-details");
-                    // Title
-                    const titleContainer = makeChildNode(wayspotDetails, "div");
-                    titleContainer.classList.add("uwtcml-wayspot-title-container");
-                    const title = makeChildNode(titleContainer, "div", data.poiData.title);
-                    title.classList.add("uwtcml-wd-title");
-                    // Status
-                    const statusContainer = makeChildNode(titleContainer, "div");
-                    statusContainer.classList.add("flex", "flex-wrap", "nominations-item__tags");
-                    const statusTag = makeChildNode(statusContainer, "div");
-                    statusTag.classList.add("submission-tag", "ng-star-inserted");
-                    if (data.poiData.state === "LIVE") {
-                        const statusSpan = makeChildNode(statusTag, "span", "Live");
-                        statusSpan.classList.add("submission-tag--accepted", "ng-star-inserted");
-                        statusContainer.classList.add("uwtcml-status-live");
-                    }
-                    else if (data.poiData.state === "RETIRED") {
-                        const statusSpan = makeChildNode(statusTag, "span", "Retired");
-                        statusSpan.classList.add("submission-tag--rejected", "ng-star-inserted");
-                        statusContainer.classList.add("uwtcml-status-retired");
-                        statusContainer.title = `Wayspot retired on ${data.poiData.lastUpdateDate}`;
-                    }
-                    // Image
-                    const image = makeChildNode(wayspotDetails, "img");
-                    image.classList.add("uwtcml-wd-image");
-                    image.src = data.poiData.imageUrl;
-                    // Description
-                    const description = makeChildNode(wayspotDetails, "div", data.poiData.description || "<No Description>");
-                    description.classList.add("uwtcml-wd-description");
-                    image.addEventListener("click", () => {
-                        window.open(`${data.poiData.imageUrl}=s0`, "_blank");
+                const G = uwtGoogle();
+                if (!(G === null || G === void 0 ? void 0 : G.maps)) {
+                    mapDiv.textContent = "Google Maps is not loaded on this page. Open a Wayfarer page that shows a map (for example a review), then reopen this window.";
+                    return;
+                }
+                const { lat, lng } = poi;
+                const svMap = new G.maps.Map(mapDiv, {
+                    center: { lat, lng },
+                    mapTypeId: "hybrid",
+                    zoom: 17,
+                    scaleControl: true,
+                    scrollwheel: true,
+                    gestureHandling: "greedy",
+                    mapTypeControl: true,
+                    tiltInteractionEnabled: true,
+                });
+                const bounds = new G.maps.LatLngBounds();
+                bounds.extend({ lat, lng });
+                // every suggested location that differs from the Wayspot's current one, coloured by its status
+                let drawn = 0;
+                for (const edit of edits) {
+                    if (edit.type !== ContributionType.EDIT_LOCATION || (edit.lat === lat && edit.lng === lng))
+                        continue;
+                    const color = TAG_COLORS[tagFor(edit).style];
+                    const suggested = { lat: edit.lat, lng: edit.lng };
+                    new G.maps.Marker({
+                        map: svMap,
+                        position: suggested,
+                        icon: generateSvgMapMarker(color),
+                        title: `${edit.day}: ${tagFor(edit).label}`,
+                        zIndex: 4,
                     });
-                    if (detailsSections.length >= 1) {
-                        // Hide the "Current Wayspot" data
-                        if (data.type === ContributionType.PHOTO) {
-                            const elementsToHide = detailsSections[0].querySelectorAll(":scope > *:nth-child(-n+2)");
-                            for (const element of elementsToHide)
-                                element.classList.add("uwtcml-hidden");
-                        }
-                        else {
-                            detailsSections[0].children[0].classList.add("uwtcml-hidden");
-                        }
-                    }
-                    if (detailsSections.length >= 2) {
-                        // For the static map
-                        const elementsToHide = detailsSections[1].querySelectorAll(":scope > *:nth-child(-n+2");
-                        for (const element of elementsToHide)
-                            element.classList.add("uwtcml-hidden");
-                    }
+                    const polylineOptions = {
+                        map: svMap,
+                        path: [{ lat, lng }, suggested],
+                        strokeOpacity: 1,
+                        geodesic: true,
+                    };
+                    new G.maps.Polyline({
+                        ...polylineOptions,
+                        strokeColor: color,
+                        strokeWeight: 2,
+                        zIndex: 2,
+                        icons: [{ icon: {
+                                    path: "M 0,0 3,6 M 0,0 -3,6",
+                                } }],
+                    });
+                    new G.maps.Polyline({
+                        ...polylineOptions,
+                        strokeColor: "#ffffff",
+                        strokeWeight: 6,
+                        zIndex: 1,
+                        icons: [{ icon: {
+                                    path: "M 0,0 1,2 M 0,0 -1,2",
+                                } }],
+                    });
+                    bounds.extend(suggested);
+                    drawn++;
                 }
-                const secondDetailsSection = detailsSections[1];
-                if (secondDetailsSection) {
-                    secondDetailsSection.parentNode.insertBefore(detailsContainer, secondDetailsSection);
+                new G.maps.Marker({
+                    map: svMap,
+                    position: { lat, lng },
+                    icon: generateSvgMapMarker("#000000"),
+                    title: "Current Wayspot location",
+                    zIndex: 3,
+                });
+                if (drawn > 0) {
+                    G.maps.event.addListenerOnce(svMap, "bounds_changed", function () {
+                        var _a;
+                        if (((_a = this.getZoom()) !== null && _a !== void 0 ? _a : 20) > 17)
+                            this.setZoom(17);
+                    });
+                    svMap.fitBounds(bounds);
+                }
+            };
+            const renderDetail = (detail, wayspotEdits) => {
+                detail.innerHTML = "";
+                const session = ++mapSession;
+                const latest = [...wayspotEdits].sort((a, b) => b.order - a.order)[0];
+                const poi = latest.poiData;
+                const head = makeChildNode(detail, "div");
+                head.className = "uwtcml-head";
+                makeChildNode(head, "h3", poi.title || "(untitled)");
+                if (poi.state === "LIVE") {
+                    makeChildNode(head, "span", "Live").className = "uwtcml-tag uwtcml-tag--accepted";
+                }
+                else if (poi.state === "RETIRED") {
+                    const retired = makeChildNode(head, "span", "Retired");
+                    retired.className = "uwtcml-tag uwtcml-tag--rejected";
+                    retired.title = `Wayspot retired on ${poi.lastUpdateDate}`;
                 }
                 if (config.get("showCurrentWayspotInfobox")) {
-                    void addSatMap(data, mapDiv, infoboxDiv);
+                    const info = makeChildNode(detail, "div");
+                    info.className = "uwtcml-info";
+                    const details = makeChildNode(info, "div");
+                    details.className = "uwtcml-wayspot-details";
+                    if (typeof poi.imageUrl === "string" && /^https:\/\//.test(poi.imageUrl)) {
+                        const image = makeChildNode(details, "img");
+                        image.className = "uwtcml-wd-image";
+                        image.src = poi.imageUrl;
+                        image.title = "Click to open the full-size image";
+                        image.addEventListener("click", () => {
+                            window.open(`${poi.imageUrl}=s0`, "_blank");
+                        });
+                    }
+                    makeChildNode(details, "div", poi.description || "<No Description>").className = "uwtcml-wd-description";
+                    const mapDiv = makeChildNode(info, "div");
+                    mapDiv.className = "uwtcml-satmap";
+                    void addSatMap(mapDiv, poi, wayspotEdits, session);
                 }
-                if (config.get("showSummaryOfEdits") && data.type.startsWith("EDIT")) {
-                    const wayspotEdits = findWayspotEdits(data, nominations);
-                    // Create container for all edit tables
-                    const editsSummaryContainer = document.createElement("div");
-                    editsSummaryContainer.classList.add("uwtcml-edits-summary");
-                    // Check if there are edits for each type and insert containers accordingly
+                if (config.get("showSummaryOfEdits")) {
+                    const summary = makeChildNode(detail, "div");
+                    summary.className = "uwtcml-edits-summary";
                     const editTypes = [
                         {
                             type: ContributionType.EDIT_TITLE,
@@ -10396,138 +10409,123 @@ var contributionManagementLayout = () => {
                             label: "Your Location Edits",
                         },
                     ];
+                    let any = false;
                     for (const editType of editTypes) {
-                        if (wayspotEdits.some(edit => edit.type === editType.type)) {
-                            const editsContainer = makeChildNode(editsSummaryContainer, "div");
-                            editsContainer.classList.add("uwtcml-edits-container");
-                            const editsHeader = makeChildNode(editsContainer, "div", editType.label);
-                            editsHeader.classList.add("uwtcml-edits-summary-header");
-                            const edits = wayspotEdits.filter(n => n.type === editType.type);
-                            const editsTable = generateEditSummaryTable(edits, editType.type);
-                            editsContainer.appendChild(editsTable);
-                        }
+                        const edits = wayspotEdits.filter(n => n.type === editType.type);
+                        if (edits.length === 0)
+                            continue;
+                        any = true;
+                        const editsContainer = makeChildNode(summary, "div");
+                        editsContainer.classList.add("uwtcml-edits-container");
+                        makeChildNode(editsContainer, "div", editType.label).classList.add("uwtcml-edits-summary-header");
+                        editsContainer.appendChild(generateEditSummaryTable(edits, editType.type));
                     }
-                    detailsContainer.parentNode.insertBefore(editsSummaryContainer, detailsContainer);
+                    if (!any)
+                        makeChildNode(summary, "p", "No title, description or location edits for this Wayspot.");
                 }
             };
-            toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", detectAppListItems);
+            const renderOverview = (body, all) => {
+                body.innerHTML = "";
+                const edits = all.filter((n) => n.type !== ContributionType.NOMINATION && !!n.poiData && !!n.poiData.id);
+                const byWayspot = new Map();
+                for (const edit of edits) {
+                    let group = byWayspot.get(edit.poiData.id);
+                    if (!group) {
+                        group = [];
+                        byWayspot.set(edit.poiData.id, group);
+                    }
+                    group.push(edit);
+                }
+                const latestOrder = (g) => Math.max(...g.map(e => e.order));
+                const groups = Array.from(byWayspot.values()).sort((a, b) => latestOrder(b) - latestOrder(a));
+                if (groups.length === 0) {
+                    makeChildNode(body, "p", "You have no edits or photo submissions yet.");
+                    return;
+                }
+                const side = makeChildNode(body, "div");
+                side.className = "uwtcml-side";
+                const search = makeChildNode(side, "input");
+                search.type = "text";
+                search.placeholder = "Search Wayspots";
+                const list = makeChildNode(side, "div");
+                list.className = "uwtcml-list";
+                const detail = makeChildNode(body, "div");
+                detail.className = "uwtcml-detail";
+                const items = [];
+                for (const group of groups) {
+                    const poi = [...group].sort((a, b) => b.order - a.order)[0].poiData;
+                    const button = makeChildNode(list, "button", `${poi.title || "(untitled)"} (${group.length})`);
+                    button.className = "uwtcml-item";
+                    button.addEventListener("click", () => {
+                        for (const item of items)
+                            item.button.classList.toggle("uwtcml-active", item.button === button);
+                        renderDetail(detail, group);
+                    });
+                    items.push({ button, title: (poi.title || "").toLowerCase() });
+                }
+                search.addEventListener("input", () => {
+                    const q = search.value.trim().toLowerCase();
+                    for (const item of items)
+                        item.button.style.display = item.title.includes(q) ? "" : "none";
+                });
+                items[0].button.click();
+            };
+            const openOverview = async () => {
+                const { container, dismiss } = await toolbox.createModal("uwtcml-modal");
+                if (document.documentElement.classList.contains("dark") || document.body.classList.contains("dark")) {
+                    container.classList.add("uwt-dark");
+                }
+                const close = makeChildNode(container, "button", "\u00d7");
+                close.className = "uwtcml-x";
+                close.addEventListener("click", () => {
+                    mapSession++;
+                    dismiss();
+                });
+                makeChildNode(container, "h2", "Edits by Wayspot");
+                const body = makeChildNode(container, "div");
+                body.className = "uwtcml-body";
+                if (nominations === null) {
+                    makeChildNode(body, "p", "Loading contributions...");
+                    try {
+                        const data = await toolbox.makeRequest("GET", "/api/v1/vault/manage");
+                        if (data && data.submissions)
+                            nominations = data.submissions;
+                    }
+                    catch (e) {
+                        logger.error(e);
+                    }
+                    body.innerHTML = "";
+                }
+                if (nominations === null) {
+                    makeChildNode(body, "p", "Could not load your contributions.");
+                    return;
+                }
+                renderOverview(body, nominations);
+            };
+            const addButton = async () => {
+                const body = await untilTruthy(() => document.body);
+                if (document.getElementById("uwtcml-button"))
+                    return;
+                const button = makeChildNode(body, "button");
+                button.id = "uwtcml-button";
+                button.type = "button";
+                button.title = "Edits by Wayspot";
+                button.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 20h9\"/><path d=\"M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z\"/></svg>";
+                button.addEventListener("click", () => { void openOverview(); });
+            };
+            void addButton();
+            toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", (data) => {
+                if (data && data.submissions)
+                    nominations = data.submissions;
+            });
         },
     });
 };
-const findWayspotEdits = (data, nominations) => nominations
-    .filter(n => n.type !== ContributionType.NOMINATION)
-    .filter(n => n.poiData.id === data.poiData.id);
 const wasOverturned = (data) => data.status === ContributionStatus.REJECTED &&
     ((data.type === ContributionType.EDIT_TITLE && data.title.trim() === data.poiData.title.trim()) ||
         (data.type === ContributionType.EDIT_DESCRIPTION && data.description.trim() === data.poiData.description.trim()) ||
         (data.type === ContributionType.EDIT_LOCATION && data.lat === data.poiData.lat && data.lng === data.poiData.lng) ||
         (data.type === ContributionType.PHOTO && data.imageUrl === data.poiData.imageUrl));
-const generateNominationTag = (data) => {
-    const tag = wasOverturned(data)
-        ? { style: "accepted", label: "Overturned" }
-        : STATUS_MAP[data.status];
-    const asTag = document.createElement("app-submission-tag");
-    const subTag = makeChildNode(asTag, "div");
-    subTag.classList.add("submission-tag");
-    makeChildNode(subTag, "span", tag.label).classList.add(`submission-tag--${tag.style}`);
-    return asTag;
-};
-const generateEditSummaryTable = (edits, type) => {
-    // Sort edits by date in descending order (most recent to oldest)
-    edits.sort((a, b) => b.order - a.order);
-    const table = document.createElement("table");
-    table.classList.add("uwtcml-edit-summary-table");
-    // Populate table with edit data
-    for (const edit of edits) {
-        const content = (() => {
-            switch (type) {
-                case ContributionType.EDIT_TITLE: return edit.title;
-                case ContributionType.EDIT_DESCRIPTION: return edit.description;
-                case ContributionType.EDIT_LOCATION: return `${edit.lat}, ${edit.lng}`;
-                default: return undefined;
-            }
-        })();
-        const row = table.insertRow();
-        makeChildNode(row, "td", edit.day);
-        makeChildNode(row, "td", content);
-        const cell3 = makeChildNode(row, "td");
-        cell3.appendChild(generateNominationTag(edit));
-    }
-    return table;
-};
-const addSatMap = async (selected, mapDiv, infoboxDiv) => {
-    await untilTruthy(() => typeof google !== "undefined");
-    let svMapElement = document.getElementById("uwft-nomination-satmap");
-    if (!svMapElement) {
-        svMapElement = makeChildNode(mapDiv, "div");
-        svMapElement.classList.add("uwtcml-satmap");
-        svMapElement.id = "uwft-nomination-satmap";
-        // Create an image element to track the image's loading status
-        // This helps make sure that the map window is the right height
-        const image = new Image();
-        image.src = selected.poiData.imageUrl;
-        image.style.display = "none";
-        image.addEventListener("load", () => {
-            const detailsColumnHeight = parseFloat(getComputedStyle(infoboxDiv).height);
-            svMapElement.style.height = `${detailsColumnHeight - 31}px`;
-        });
-        // Append the image element to the document body to trigger image loading
-        document.body.appendChild(image);
-    }
-    const { lat, lng } = selected.poiData;
-    const currentLocation = new google.maps.LatLng(lat, lng);
-    const svMap = new google.maps.Map(svMapElement, {
-        center: { lat, lng },
-        mapTypeId: "hybrid",
-        zoom: 17,
-        scaleControl: true,
-        scrollwheel: true,
-        gestureHandling: "greedy",
-        mapTypeControl: true,
-        tiltInteractionEnabled: true,
-    });
-    if (selected.type === ContributionType.EDIT_LOCATION) {
-        if (selected.lat !== lat || selected.lng !== lng) {
-            const suggestedLocation = new google.maps.LatLng(selected.lat, selected.lng);
-            new google.maps.Marker({
-                map: svMap,
-                position: suggestedLocation,
-                icon: generateSvgMapMarker("#08CA00"),
-                zIndex: 4,
-            });
-            const polylineOptions = {
-                map: svMap,
-                path: [currentLocation, suggestedLocation],
-                strokeOpacity: 1,
-                geodesic: true,
-            };
-            new google.maps.Polyline({
-                ...polylineOptions,
-                strokeColor: "#08CA00",
-                strokeWeight: 2,
-                zIndex: 2,
-                icons: [{ icon: {
-                            path: "M 0,0 3,6 M 0,0 -3,6",
-                        } }],
-            });
-            new google.maps.Polyline({
-                ...polylineOptions,
-                strokeColor: "#ffffff",
-                strokeWeight: 6,
-                zIndex: 1,
-                icons: [{ icon: {
-                            path: "M 0,0 1,2 M 0,0 -1,2",
-                        } }],
-            });
-        }
-    }
-    new google.maps.Marker({
-        map: svMap,
-        position: { lat, lng },
-        icon: generateSvgMapMarker("#000000"),
-        zIndex: 3,
-    });
-};
 const generateSvgMapMarker = (fillColor) => {
     const icon = `<?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
@@ -10872,6 +10870,24 @@ var autoHold = () => {
 // directory of this script's GitHub repository:
 // <https://github.com/bilde2910/Wayfarer-Tools/blob/main/LICENSE>
 // If not, see <https://www.gnu.org/licenses/>.
+// redesign: the static maps are no longer necessarily <nia-google-static-map> elements. A static map is
+// recognised by its image URL instead, whether it is an <img> or a background image on any element.
+const STATIC_MAP_PATH = "/maps/api/staticmap";
+const STATIC_MAP_SELECTOR = `nia-google-static-map, img[src*="${STATIC_MAP_PATH}"], [style*="${STATIC_MAP_PATH}"]`;
+const getStaticMapUrl = (el) => {
+    var _a, _b;
+    const raw = el instanceof HTMLImageElement
+        ? (el.currentSrc || el.src)
+        : (_b = (_a = el.style.backgroundImage.match(/url\(["']?(?<url>[^"')]+)["']?\)/)) === null || _a === void 0 ? void 0 : _a.groups) === null || _b === void 0 ? void 0 : _b.url;
+    if (!raw || !raw.includes(STATIC_MAP_PATH))
+        return;
+    try {
+        return new URL(raw, location.href);
+    }
+    catch (_c) {
+        return;
+    }
+};
 var dynamicMapsEverywhere = () => {
     register()({
         id: "dynamic-maps-everywhere",
@@ -10901,10 +10917,12 @@ var dynamicMapsEverywhere = () => {
                 editor: new CheckboxEditor(),
             });
             const replaceMap = (staticMap) => {
-                var _a, _b;
-                const bgImageUrl = (_b = (_a = staticMap.style.backgroundImage.match(/^url\("(?<url>[^"]+)"\)$/)) === null || _a === void 0 ? void 0 : _a.groups) === null || _b === void 0 ? void 0 : _b.url;
-                if (typeof bgImageUrl !== "undefined") {
-                    const url = new URL(bgImageUrl);
+                const url = getStaticMapUrl(staticMap);
+                if (typeof url !== "undefined") {
+                    // the page is scanned repeatedly; skip maps that are already showing this exact static map
+                    if (staticMap.__uwtTools_DME_url === url.href)
+                        return;
+                    staticMap.__uwtTools_DME_url = url.href;
                     const mapConfig = parseStaticMapUrl(url);
                     if (typeof mapConfig === "undefined")
                         return;
@@ -10917,6 +10935,7 @@ var dynamicMapsEverywhere = () => {
                     staticMap.classList.add("uwtdme-hidden");
                     if (typeof staticMap.__uwtTools_DME === "undefined") {
                         const node = document.createElement("div");
+                        node.classList.add("uwtdme-container");
                         staticMap.parentElement.insertBefore(node, staticMap);
                         staticMap.__uwtTools_DME = createDynamicMap(node, mapConfig, chosenMapType);
                     }
@@ -10932,11 +10951,36 @@ var dynamicMapsEverywhere = () => {
                     }
                 }
             };
-            untilTruthy(() => typeof google !== "undefined").then(() => {
-                const currentMaps = document.querySelectorAll("nia-google-static-map");
-                for (const map of currentMaps)
-                    replaceMap(map);
-                toolbox.observeNodeAttributeChanges("NIA-GOOGLE-STATIC-MAP", ["style"], replaceMap);
+            // the page's own Google Maps API (not the userscript sandbox's view of the window) must be loaded
+            untilTruthy(() => { var _a; return (_a = uwtGoogle()) === null || _a === void 0 ? void 0 : _a.maps; }).then(() => {
+                const scan = () => {
+                    for (const map of document.querySelectorAll(STATIC_MAP_SELECTOR)) {
+                        try {
+                            replaceMap(map);
+                        }
+                        catch (ex) {
+                            logger.error(ex);
+                        }
+                    }
+                };
+                scan();
+                let timer;
+                new MutationObserver((mutations) => {
+                    // ignore changes inside the interactive maps themselves
+                    if (mutations.every(m => m.target instanceof Element && m.target.closest(".uwtdme-container")))
+                        return;
+                    if (typeof timer === "undefined") {
+                        timer = window.setTimeout(() => {
+                            timer = undefined;
+                            scan();
+                        }, 300);
+                    }
+                }).observe(document.documentElement, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ["style", "src"],
+                });
             }).catch(logger.error);
         },
     });
@@ -10944,7 +10988,8 @@ var dynamicMapsEverywhere = () => {
 const createDynamicMap = (container, mapConfig, chosenMapType) => {
     container.style.width = "100%";
     container.style.height = `${mapConfig.height}px`;
-    const map = new google.maps.Map(container, {
+    const G = uwtGoogle();
+    const map = new G.maps.Map(container, {
         mapTypeId: chosenMapType,
         scaleControl: true,
         scrollwheel: true,
@@ -10971,15 +11016,16 @@ const reconfigureDynamicMap = (dMap, mapConfig, chosenMapType) => {
     }
 };
 const addDynamicMapMarkers = (dMap, markers) => {
-    const bounds = new google.maps.LatLngBounds();
+    const G = uwtGoogle();
+    const bounds = new G.maps.LatLngBounds();
     for (const marker of markers) {
         bounds.extend(marker.position);
-        dMap.markers.push(new google.maps.Marker({
+        dMap.markers.push(new G.maps.Marker({
             map: dMap.map,
             ...marker,
         }));
     }
-    google.maps.event.addListenerOnce(dMap.map, "bounds_changed", function () {
+    G.maps.event.addListenerOnce(dMap.map, "bounds_changed", function () {
         var _a;
         if (((_a = this.getZoom()) !== null && _a !== void 0 ? _a : 20) > 17) {
             this.setZoom(17);
@@ -10987,11 +11033,20 @@ const addDynamicMapMarkers = (dMap, markers) => {
     });
     dMap.map.fitBounds(bounds);
 };
+const toLiteral = (p) => typeof p.lat === "function" ? { lat: p.lat(), lng: p.lng() } : p;
+// Initial compass bearing from one point to another; the Maps "geometry" library may not be loaded on the page.
+const bearing = (from, to) => {
+    const rad = (x) => x * Math.PI / 180;
+    const y = Math.sin(rad(to.lng - from.lng)) * Math.cos(rad(to.lat));
+    const x = Math.cos(rad(from.lat)) * Math.sin(rad(to.lat)) -
+        Math.sin(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.cos(rad(to.lng - from.lng));
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+};
 const loadStreetView = async (dMap, position) => {
-    const svClient = new google.maps.StreetViewService;
+    const svClient = new (uwtGoogle().maps.StreetViewService);
     const result = await svClient.getPanorama({ location: position, radius: 50 });
     const svLocation = result.data.location.latLng;
-    const heading = google.maps.geometry.spherical.computeHeading(svLocation, position);
+    const heading = bearing(toLiteral(svLocation), toLiteral(position));
     dMap.pano.setPov({ heading, pitch: 0 });
     dMap.pano.setPosition(svLocation);
     dMap.pano.setVisible(true);
@@ -11051,7 +11106,6 @@ const parseMarker = (marker) => {
     const markerSpec = marker.split("|");
     const style = {};
     while (markerSpec.length > 0 && markerSpec[0].includes(":")) {
-        console.log("b");
         const s = markerSpec.shift();
         style[s.substring(0, s.indexOf(":"))] = s.substring(s.indexOf(":") + 1);
     }
@@ -11061,7 +11115,7 @@ const parseMarker = (marker) => {
         .map(([lat, lng]) => {
         var _a;
         return ({
-            position: new google.maps.LatLng(lat, lng),
+            position: { lat, lng },
             icon: (_a = style.icon) === null || _a === void 0 ? void 0 : _a.replace(/^(https?:)(?!\/\/)/, "$1//"),
         });
     });
@@ -12355,7 +12409,7 @@ init();})(window,markerClusterer,agGrid,proj4,Diff);
 (() => {
   const addStyle = () => {
     const elem = document.createElement("style");
-    elem.innerHTML = (`.uwftcore-checkbox{display:grid;grid-template-columns:1em auto;gap:.5em;line-height:1.1;margin-bottom:.5em;cursor:pointer}.uwftcore-checkbox input[type=checkbox]{appearance:none;font:inherit;color:currentColor;width:1.15em;height:1.15em;border:.15em solid currentColor;border-radius:.15em;display:grid;place-content:center}.uwftcore-checkbox input[type=checkbox]::before{content:"";width:.65em;height:.65em;transform:scale(0);transition:120ms transform ease-in-out;box-shadow:inset 1em 1em #ff6d38}.uwftcore-checkbox input[type=checkbox]:checked::before{transform:scale(1)}.uwftcore-checkbox input[type=checkbox]:disabled::before{box-shadow:inset 1em 1em hsl(16,0%,61%)}.uwftcore-plugin{margin-bottom:1em}.uwftcore-plugin-title{font-weight:bold}.uwftcore-authors{font-size:.8em}.uwftcore-description{font-size:.8em;opacity:.5}.uwftcore-depends{font-size:.8em}.uwftcore-depend-line{font-size:.8em}.uwftcore-refresh-reminder{margin-bottom:1em}.uwftcore-help-available{cursor:context-menu;text-decoration:underline dotted #7f7f7f}.uwftcore-discord-link-box{font-weight:bold}.uwftcore-discord-link-box img{height:1em;display:inline-block;margin-right:5px;margin-top:-4px}.uwftcore-option-line{margin-bottom:1rem}.dark input.uwftcore-fix,.dark select.uwftcore-fix,.dark span.uwftcore-fix{background-color:#333}input.uwftcore-fix,select.uwftcore-fix,span.uwftcore-fix{padding:2px 5px}input.uwftcore-ui-large-input{padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;font-size:16px}.uwftcore-ui-button{background-color:#e5e5e5;border:none;color:#ff4713;padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;text-align:center;text-decoration:none;display:inline-block;font-size:16px;cursor:pointer}.uwftcore-ui-button:hover{background-color:hsl(0,1%,75%);transition:.2s}.dark .uwftcore-ui-button{background-color:hsl(0,1%,25%);color:#20b8e3}.dark .uwftcore-ui-button:hover{background-color:#707070;transition:.2s}.uwftcore-ui-button-active{background-color:hsl(0,1%,67%)}.dark .uwftcore-ui-button-active{background-color:hsl(0,1%,33%)}#uwftcore-notifications{position:absolute;bottom:1em;right:1em;width:30em;z-index:100}.uwftcore-notification{font-weight:bold;border-radius:1em;padding:1em;margin-top:1.5em;color:#fff}.uwftcore-notify-content-wrapper{display:flex;align-items:center}.uwftcore-notify-icon-wrapper{width:30px}.uwftcore-notify-icon-wrapper>img{width:20px;height:20px}.uwftcore-nbg-red{background-color:#c00}.uwftcore-nbg-red a{color:#fcc}.uwftcore-nbg-green{background-color:hsl(153,90%,36%)}.uwftcore-nbg-blue{background-color:hsl(227,74%,39%)}.uwftcore-nbg-purple{background-color:hsl(258,90%,66%)}.uwftcore-nbg-gold{background-color:hsl(43,74%,49%)}.uwftcore-nbg-gray{background-color:hsl(0,0%,50%)}.uwftcore-nbg-brown{background-color:hsl(30,38%,33%)}.uwftcore-nbg-dark-gray{background-color:#666}.uwftcore-sidebar-icon{width:24px}.uwftcore-fullscreen-overlay{position:fixed;top:0;left:0;height:100dvh;width:100dvw;background-color:rgba(0,0,0,.5);z-index:100000}.uwftcore-fullscreen-inner{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px;max-height:500px}.uwftcore-modal-common{width:calc(100vw - 50px);height:calc(100vh - 50px)}.uwftcore-modal-common h3{font-weight:bold;margin:10px auto}.uwftcore-modal-common>p{margin:10px auto}.dark .uwftcore-fullscreen-inner{background-color:#333}.uwftcore-import-options{max-width:550px;height:initial}.uwftcore-import-method{background-color:#e5e5e5;border:none;padding:10px 10px;cursor:pointer;width:100%;background-size:30px;background-position:15px;background-repeat:no-repeat;margin-bottom:10px}.uwftcore-import-method .uwftcore-import-method-title{color:#ff4713;font-size:16px}.uwftcore-import-method .uwftcore-import-method-desc{font-size:12px}.dark .uwftcore-import-method{background-color:#404040}.dark .uwftcore-import-method .uwftcore-import-method-title{color:#20b8e3}#uwt-status-stack{position:fixed;left:16px;bottom:150px;z-index:99990;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.uwt-pill{display:flex;align-items:center;gap:.5em;margin:0;padding:.25em .8em;border-radius:999px;background:rgba(17,24,39,.92);color:#f9fafb;box-shadow:0 2px 8px rgba(0,0,0,.4);font-size:14px;line-height:1.2;white-space:nowrap;user-select:none}.uwt-pill p{margin:0}.uwt-pill p:nth-child(2){font-size:18px;font-weight:bold;font-variant-numeric:tabular-nums}.uwtnm-text{font-size:18px}.uwtnm-toggle{display:none}.uwtnm-wrap-collapsible{margin-bottom:1.2rem}#uwtnm-collapsed-map{display:none}.uwtnm-lbl-toggle{display:block;font-weight:bold;font-family:monospace;font-size:1.2rem;text-transform:uppercase;text-align:center;padding:1rem;color:#fff;background:#df471c;cursor:pointer;border-radius:7px;transition:all .25s ease-out}.uwtnm-lbl-toggle:hover{color:#d3d3d3}.uwtnm-lbl-toggle::before{content:" ";display:inline-block;border-top:5px solid rgba(0,0,0,0);border-bottom:5px solid rgba(0,0,0,0);border-left:5px solid currentColor;vertical-align:middle;margin-right:.7rem;transform:translateY(-2px);transition:transform .2s ease-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle::before{transform:rotate(90deg) translateX(-3px)}.uwtnm-collapsible-content{max-height:0px;overflow:hidden;transition:max-height .25s ease-in-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle+.uwtnm-collapsible-content{max-height:9999999pt}.uwtnm-toggle:checked+.uwtnm-lbl-toggle{border-bottom-right-radius:0;border-bottom-left-radius:0}.uwtnm-map{height:400px}.uwtoi-label{font-weight:bold}.uwtoi-container{margin-bottom:10px}.uwtoi-dupe-map{padding:0 1rem;margin-top:-1rem}.uwtoi-linkspan::before{content:" · "}.uwtoi-linkspan:nth-child(2)::before{content:""}.uwtoi-experimental{color:#ff8c00;position:relative;display:inline-block}.uwtoi-tttitle{color:#ff8c00;font-weight:bold}.uwtoi-experimental .uwtoi-tooltip{visibility:hidden;width:320px;background-color:rgba(0,0,0,.8);color:#fff;text-align:center;padding:12px;position:absolute;z-index:1;bottom:150%;left:50%;margin-left:-160px;border-radius:10px;pointer-events:none}.uwtoi-experimental .uwtoi-tooltip::after{content:"";position:absolute;top:100%;left:50%;z-index:1;margin-left:-10px;border-width:10px;border-style:solid;border-color:rgba(0,0,0,.8) rgba(0,0,0,0) rgba(0,0,0,0) rgba(0,0,0,0)}.uwtoi-experimental:hover .uwtoi-tooltip{visibility:visible}.uwtoi-address{font-size:1.1em;font-weight:bold;color:#000}.dark .uwtoi-address{color:#fff}#uwtrh-button{position:fixed;left:112px;bottom:64px;z-index:99990;width:40px;height:40px;border-radius:50%;border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}#uwtrh-button:hover{opacity:1}.uwtrh-modal{position:relative;display:flex;flex-direction:column;background:#fff !important;color:#111827 !important;font-size:15px;width:min(1100px,100vw - 50px);height:min(760px,100vh - 50px);max-width:none !important;max-height:none !important}.uwtrh-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}.uwtrh-modal h2{font-size:1.4rem;font-weight:bold;margin-bottom:.6rem}.uwtrh-modal .uwtrh-x{position:absolute;top:8px;right:14px;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}.uwtrh-modal .uwtrh-x:hover{opacity:1}.uwtrh-modal .uwtrh-count{margin:.4rem 0}.uwtrh-modal .uwtrh-table{flex:1 1 auto;height:auto;min-height:320px}.uwtrh-idb{display:flex;align-items:center;flex-wrap:wrap;gap:.25rem}.uwtrh-idb button{background-color:#e5e5e5;border:none;color:#ff4713;padding:2px 6px;margin:3px;text-align:center;text-decoration:none;display:inline-block;font-size:14px}.dark .uwtrh-idb button{background-color:#404040;color:#20b8e3}.uwtrh-table{display:none;height:500px}#uwtns-button{position:fixed;left:64px;bottom:64px;z-index:99990;width:40px;height:40px;border-radius:50%;border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}#uwtns-button:hover{opacity:1}.uwtns-modal{position:relative;background:#fff !important;color:#111827 !important;font-size:15px;width:min(760px,100vw - 50px)}.uwtns-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}.uwtns-modal h2{font-size:1.4rem;font-weight:bold;margin-bottom:.8rem}.uwtns-modal .uwtns-x{position:absolute;top:8px;right:14px;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}.uwtns-modal .uwtns-x:hover{opacity:1}#uwftns-export{display:flex;gap:.5rem;margin-top:1rem}.uwtns-stats-table th,.uwtns-stats-table td{border:1px solid rgba(128,128,128,.6);padding:1pt 5pt}.uwtns-stats-table{width:100%}.uwtns-stats-table th:first-child,.uwtns-stats-table td:first-child{text-align:left}.uwtns-stats-table th:not(:first-child),.uwtns-stats-table td:not(:first-child){text-align:center}.uwftmr-div{color:#333;margin-left:2em;padding-top:.3em;text-align:center;display:block}.dark .uwftmr-div{color:#ddd}.uwftmr-counter{font-size:20px;color:#20b8e3}.uwftmr-sbb{color:#20b8e3}.uwtrct-outer{position:fixed;left:16px;bottom:112px;z-index:99990;display:flex;align-items:center;gap:.5em;margin:0;padding:.25em .8em;border-radius:999px;background:rgba(17,24,39,.92);color:#f9fafb;box-shadow:0 2px 8px rgba(0,0,0,.4);font-size:14px;line-height:1.2;cursor:pointer;user-select:none}.uwtrct-outer p{margin:0}.uwtrct-outer p:nth-child(2){font-size:18px;font-weight:bold;color:#20b8e3;font-variant-numeric:tabular-nums}.uwtkr2-eds-highlighted{border-width:1px;border-color:#df471c}.dark .uwtkr2-eds-highlighted{border-color:#20b8e3}.uwtkr2-eds-btn-key::before,.uwtkr2-key-label,.uwtkr2-key-span{color:#ff6d38;font-family:monospace;text-transform:none;display:inline-block}.uwtkr2-key-span-wildcard{color:#20b8e3}.uwtkr2-eds-btn-key-no-highlight::before{color:#000}.dark .uwtkr2-eds-btn-key-no-highlight::before{color:#fff}.uwtkr2-eds-btn-key-pad::before,.uwtkr2-key-label{margin-right:5px}.uwtkr2-eds-btn-key.is-selected::before,.uwtkr2-eds-btn-key.wf-button--primary::before{color:#000}.uwtkr2-photo-card-label{font-size:1.9em;display:inline-block;padding:0 .5em}.uwtkr2-eds-key-bracket-A::before{content:"A"}.uwtkr2-eds-key-bracket-B::before{content:"B"}.uwtkr2-eds-key-bracket-C::before{content:"C"}.uwtkr2-eds-key-bracket-D::before{content:"D"}.uwtkr2-eds-key-bracket-E::before{content:"E"}.uwtkr2-eds-key-bracket-F::before{content:"F"}.uwtkr2-eds-key-bracket-G::before{content:"G"}.uwtkr2-eds-key-bracket-H::before{content:"H"}.uwtkr2-eds-key-bracket-I::before{content:"I"}.uwtkr2-eds-key-bracket-J::before{content:"J"}.uwtkr2-eds-key-bracket-K::before{content:"K"}.uwtkr2-eds-key-bracket-L::before{content:"L"}.uwtkr2-eds-key-bracket-M::before{content:"M"}.uwtkr2-eds-key-bracket-N::before{content:"N"}.uwtkr2-eds-key-bracket-O::before{content:"O"}.uwtkr2-eds-key-bracket-P::before{content:"P"}.uwtkr2-eds-key-bracket-Q::before{content:"Q"}.uwtkr2-eds-key-bracket-R::before{content:"R"}.uwtkr2-eds-key-bracket-S::before{content:"S"}.uwtkr2-eds-key-bracket-T::before{content:"T"}.uwtkr2-eds-key-bracket-U::before{content:"U"}.uwtkr2-eds-key-bracket-V::before{content:"V"}.uwtkr2-eds-key-bracket-W::before{content:"W"}.uwtkr2-eds-key-bracket-X::before{content:"X"}.uwtkr2-eds-key-bracket-Y::before{content:"Y"}.uwtkr2-eds-key-bracket-Z::before{content:"Z"}.uwtkr2-eds-key-bracket-0::before{content:"0"}.uwtkr2-eds-key-bracket-1::before{content:"1"}.uwtkr2-eds-key-bracket-2::before{content:"2"}.uwtkr2-eds-key-bracket-3::before{content:"3"}.uwtkr2-eds-key-bracket-4::before{content:"4"}.uwtkr2-eds-key-bracket-5::before{content:"5"}.uwtkr2-eds-key-bracket-6::before{content:"6"}.uwtkr2-eds-key-bracket-7::before{content:"7"}.uwtkr2-eds-key-bracket-8::before{content:"8"}.uwtkr2-eds-key-bracket-9::before{content:"9"}.uwtkr2-eds-key-bracket-Esc::before{content:"Esc"}.uwtkr2-eds-key-bracket-Tab::before{content:"Tab"}.uwtkr2-eds-key-bracket-Enter::before{content:"Enter"}.uwtkr2-dupe-key-box{width:0;z-index:10}.uwtkr2-dupe-key-box>div{width:1.7em;margin:5px;text-align:center;font-weight:bold;font-size:1.3em;border:1px solid #000;pointer-events:none;background:rgba(0,0,0,.5);color:#ff6d38}.uwtkr2-card app-review-text-diff{display:inline-block}.uwftes-text{font-size:18px}.uwftes-count{font-size:18px;display:flex;margin:0px 0px 0px 0px}.uwftes-parent{display:flex;justify-content:space-between;margin:16px 0px 0px}.uwtegas-options-modal{max-width:700px;height:initial}.uwtegas-table{width:100%}.uwtegas-table td{border:none}.uwtegas-table input{background-color:#ddd;width:100%;padding:5px}.dark .uwtegas-table input{background-color:#222}.uwtegas-cancel-btn{color:#000}.dark .uwtegas-cancel-btn{color:red}.uwtemli-modal{text-align:center}.uwtemli-modal h2{margin-bottom:10px}.uwftat-outer p:nth-child(2){color:#20b8e3}.uwtnsh-dropdown{cursor:pointer}.uwtnsh-dropdown .uwtnsh-expanded{display:none}.uwtnsh-dropdown .uwtnsh-dd-left{float:left;margin-right:7px;display:block}.uwtnsh-dropdown .uwtnsh-dd-right{float:right}app-submissions app-details-pane app-submission-tag-set+span{display:none}.uwtnsh-verified::after{content:" ✓";color:green;font-family:initial}.dark .uwtnsh-verified::after{color:lime}.uwftbdiff-differs{border-bottom:2px solid #ff6d38;background-color:rgba(255,109,56,.3)}img.uwtcml-list-image{width:8rem !important}.uwtcml-details-container{display:flex;flex-wrap:wrap;flex-direction:row}.uwtcml-map-column{flex:1 1 50%;min-width:250px}.uwtcml-details-column{flex:1 1 50%;min-width:250px}.uwtcml-wayspot-details{background-color:#e4e4e4;border-radius:10px;padding:10px;margin-top:10px;margin-right:20px}.dark .uwtcml-wayspot-details{background-color:#444}.uwtcml-wayspot-title-container{display:flex;justify-content:space-between;align-items:center}.uwtcml-wayspot-title-container .uwtcml-wd-title{font-weight:bold;margin-right:10px}.uwtcml-status-live{min-width:35px}.uwtcml-status-retired{min-width:60px}.uwtcml-wd-image{width:100%;border-radius:10px;margin-top:5px;margin-bottom:5px}.uwtcml-wd-description{text-align:left}.uwtcml-hidden{display:none}.uwtcml-edits-container{margin-bottom:24px}.uwtcml-edits-summary-header{font-weight:bold}.uwtcml-edit-summary-table{width:100%;border-collapse:collapse}.uwtcml-edit-summary-table td:first-child{width:100px;border:none}.uwtcml-edit-summary-table td:last-child{width:95px;text-align:right;border:none}.uwtcml-satmap{margin-top:10px;border-radius:10px;overflow:"hidden"}.uwtdme-hidden{display:none !important}.uwtwsr-root-new{margin-top:-1rem;grid-gap:1rem !important}.uwtwsr-root-new app-photo-b img{margin:auto}.uwtwsr-root-new .wf-review-card{height:initial;max-height:380px}.uwtwsr-root-new #check-duplicates-card{max-height:initial}.uwtwsr-root-new .wf-image-modal img{max-height:calc((100dvh - 440px)/2)}@media(max-width: 2000px){.uwtwsr-root-new .action-buttons-row{flex-direction:column !important;justify-content:initial !important}}.uwtwsr-thumbs-row{display:flex;flex-direction:row}.uwtwsr-root-new .dont-know-button{margin-left:0 !important;padding:.375rem !important}.uwtwsr-root-new .question-title .question-subtitle-tooltip{margin-left:.5rem;line-height:1.6rem}.uwtwsr-root-new app-question-card .main-section-container{justify-content:space-between}.uwftsc-normal{color:#20b8e3}.uwftsc-low{color:#44ce1b}.uwftsc-mid{color:#bbdb44}.uwftsc-med{color:#f7e379}.uwftsc-high{color:#f2a134}.uwftsc-extreme{color:#e51f1f}#uwtvd-display{position:fixed;left:64px;bottom:26px;z-index:99990;padding:.1em .7em;border-radius:999px;background:rgba(17,24,39,.85);font-size:12px;line-height:1.3;box-shadow:0 2px 8px rgba(0,0,0,.35);pointer-events:none}#uwtvd-display span{white-space:nowrap;font-weight:bold;color:#20b8e3}.uwtvd-update-available #uwtvd-display{animation:blink-animation 2s steps(2, start) infinite}.uwtvd-update-available #uwtvd-display span{color:red}@keyframes blink-animation{to{visibility:hidden}}.uwftpb-blocked-hidden{display:none}.uwftpb-header{font-weight:bold}.uwftpb-table{width:100%;border-collapse:collapse}.uwftpb-table td:first-child{width:100px;border:none}.uwftpb-table td:last-child{width:95px;text-align:right;border:none}.uwtSTH-bg{position:fixed;top:0;left:0;height:100vh;width:100vw;background-color:rgba(0,0,0,.5);z-index:100000}.uwtSTH-popup{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);width:calc(100vw - 50px);height:calc(100vh - 50px);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px}.dark .uwtSTH-popup{background-color:#333}.uwtSTH-popup h1{margin-bottom:20px;width:calc(70% - 70px);float:left}.uwtSTH-search{width:30%;padding:.7em;font-size:1.1em;background-color:#ddd;float:right;display:none}.dark .uwtSTH-search{background-color:#222}.uwtSTH-searchMatch{background-color:#ff0;color:#000;display:inline-block;box-shadow:0 0 4px rgba(0,0,0,.5);white-space:pre}.uwtSTH-close{z-index:2;font-size:2em;cursor:pointer;opacity:.5;float:right;margin-left:14px}.uwtSTH-close:hover{opacity:1}.uwtSTH-box{height:calc(100% - 60px);display:flex;background-color:#ddd;clear:both}.dark .uwtSTH-box{background-color:#222}.uwtSTH-box>div{height:100%}.uwtSTH-list{width:40%;background-color:#eee;overflow-y:scroll;border-right:3px solid #fff}.dark .uwtSTH-list{background-color:#2a2a2a;border-right:3px solid #333}.uwtSTH-chat{width:60%;overflow-y:scroll;padding-bottom:15px}.uwtSTH-listitem{padding:10px;border-bottom:3px solid #fff;cursor:pointer;white-space:nowrap}.uwtSTH-listitem p{overflow:hidden;text-overflow:ellipsis}.dark .uwtSTH-listitem{border-bottom:3px solid #333}.uwtSTH-selected{background-color:#ddd;cursor:default}.dark .uwtSTH-selected{background-color:#222}.uwtSTH-message{padding:15px;clear:both}.uwtSTH-chatBubble{border-radius:8px;max-width:270px;padding:10px}.uwtSTH-chatBubble a{text-decoration:underline}.uwtSTH-msgState-sent .uwtSTH-chatBubble a{color:#fff}.uwtSTH-msgState-received .uwtSTH-chatBubble a{color:#000}.uwtSTH-msgState-sent .uwtSTH-chatBubble{background-color:#d85813;color:#fff;float:right}.uwtSTH-msgState-received .uwtSTH-chatBubble{background-color:#fff;color:#000;float:left}.uwtSTH-message>p{font-size:.8em;opacity:.8;margin:3px}.uwtSTH-msgState-received>p{text-align:left}.uwtSTH-msgState-sent>p{text-align:right}.uwtSTH-mt-option{background-color:#eee;padding:5px;margin-top:5px;border:1px solid #ccc}`);
+    elem.innerHTML = (`#uwtrh-button{position:fixed;left:112px;bottom:64px;z-index:99990;width:40px;height:40px;border-radius:50%;border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}#uwtrh-button:hover{opacity:1}.uwtrh-modal{position:relative;display:flex;flex-direction:column;background:#fff !important;color:#111827 !important;font-size:15px;width:min(1100px,100vw - 50px);height:min(760px,100vh - 50px);max-width:none !important;max-height:none !important}.uwtrh-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}.uwtrh-modal h2{font-size:1.4rem;font-weight:bold;margin-bottom:.6rem}.uwtrh-modal .uwtrh-x{position:absolute;top:8px;right:14px;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}.uwtrh-modal .uwtrh-x:hover{opacity:1}.uwtrh-modal .uwtrh-count{margin:.4rem 0}.uwtrh-modal .uwtrh-table{flex:1 1 auto;height:auto;min-height:320px}.uwtrh-idb{display:flex;align-items:center;flex-wrap:wrap;gap:.25rem}.uwtrh-idb button{background-color:#e5e5e5;border:none;color:#ff4713;padding:2px 6px;margin:3px;text-align:center;text-decoration:none;display:inline-block;font-size:14px}.dark .uwtrh-idb button{background-color:#404040;color:#20b8e3}.uwtrh-table{display:none;height:500px}#uwtns-button{position:fixed;left:64px;bottom:64px;z-index:99990;width:40px;height:40px;border-radius:50%;border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}#uwtns-button:hover{opacity:1}.uwtns-modal{position:relative;background:#fff !important;color:#111827 !important;font-size:15px;width:min(760px,100vw - 50px)}.uwtns-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}.uwtns-modal h2{font-size:1.4rem;font-weight:bold;margin-bottom:.8rem}.uwtns-modal .uwtns-x{position:absolute;top:8px;right:14px;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}.uwtns-modal .uwtns-x:hover{opacity:1}#uwftns-export{display:flex;gap:.5rem;margin-top:1rem}.uwtns-stats-table th,.uwtns-stats-table td{border:1px solid rgba(128,128,128,.6);padding:1pt 5pt}.uwtns-stats-table{width:100%}.uwtns-stats-table th:first-child,.uwtns-stats-table td:first-child{text-align:left}.uwtns-stats-table th:not(:first-child),.uwtns-stats-table td:not(:first-child){text-align:center}.uwftmr-div{color:#333;margin-left:2em;padding-top:.3em;text-align:center;display:block}.dark .uwftmr-div{color:#ddd}.uwftmr-counter{font-size:20px;color:#20b8e3}.uwftmr-sbb{color:#20b8e3}.uwftcore-checkbox{display:grid;grid-template-columns:1em auto;gap:.5em;line-height:1.1;margin-bottom:.5em;cursor:pointer}.uwftcore-checkbox input[type=checkbox]{appearance:none;font:inherit;color:currentColor;width:1.15em;height:1.15em;border:.15em solid currentColor;border-radius:.15em;display:grid;place-content:center}.uwftcore-checkbox input[type=checkbox]::before{content:"";width:.65em;height:.65em;transform:scale(0);transition:120ms transform ease-in-out;box-shadow:inset 1em 1em #ff6d38}.uwftcore-checkbox input[type=checkbox]:checked::before{transform:scale(1)}.uwftcore-checkbox input[type=checkbox]:disabled::before{box-shadow:inset 1em 1em hsl(16,0%,61%)}.uwftcore-plugin{margin-bottom:1em}.uwftcore-plugin-title{font-weight:bold}.uwftcore-authors{font-size:.8em}.uwftcore-description{font-size:.8em;opacity:.5}.uwftcore-depends{font-size:.8em}.uwftcore-depend-line{font-size:.8em}.uwftcore-refresh-reminder{margin-bottom:1em}.uwftcore-help-available{cursor:context-menu;text-decoration:underline dotted #7f7f7f}.uwftcore-discord-link-box{font-weight:bold}.uwftcore-discord-link-box img{height:1em;display:inline-block;margin-right:5px;margin-top:-4px}.uwftcore-option-line{margin-bottom:1rem}.dark input.uwftcore-fix,.dark select.uwftcore-fix,.dark span.uwftcore-fix{background-color:#333}input.uwftcore-fix,select.uwftcore-fix,span.uwftcore-fix{padding:2px 5px}input.uwftcore-ui-large-input{padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;font-size:16px}.uwftcore-ui-button{background-color:#e5e5e5;border:none;color:#ff4713;padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;text-align:center;text-decoration:none;display:inline-block;font-size:16px;cursor:pointer}.uwftcore-ui-button:hover{background-color:hsl(0,1%,75%);transition:.2s}.dark .uwftcore-ui-button{background-color:hsl(0,1%,25%);color:#20b8e3}.dark .uwftcore-ui-button:hover{background-color:#707070;transition:.2s}.uwftcore-ui-button-active{background-color:hsl(0,1%,67%)}.dark .uwftcore-ui-button-active{background-color:hsl(0,1%,33%)}#uwftcore-notifications{position:absolute;bottom:1em;right:1em;width:30em;z-index:100}.uwftcore-notification{font-weight:bold;border-radius:1em;padding:1em;margin-top:1.5em;color:#fff}.uwftcore-notify-content-wrapper{display:flex;align-items:center}.uwftcore-notify-icon-wrapper{width:30px}.uwftcore-notify-icon-wrapper>img{width:20px;height:20px}.uwftcore-nbg-red{background-color:#c00}.uwftcore-nbg-red a{color:#fcc}.uwftcore-nbg-green{background-color:hsl(153,90%,36%)}.uwftcore-nbg-blue{background-color:hsl(227,74%,39%)}.uwftcore-nbg-purple{background-color:hsl(258,90%,66%)}.uwftcore-nbg-gold{background-color:hsl(43,74%,49%)}.uwftcore-nbg-gray{background-color:hsl(0,0%,50%)}.uwftcore-nbg-brown{background-color:hsl(30,38%,33%)}.uwftcore-nbg-dark-gray{background-color:#666}.uwftcore-sidebar-icon{width:24px}.uwftcore-fullscreen-overlay{position:fixed;top:0;left:0;height:100dvh;width:100dvw;background-color:rgba(0,0,0,.5);z-index:100000}.uwftcore-fullscreen-inner{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px;max-height:500px}.uwftcore-modal-common{width:calc(100vw - 50px);height:calc(100vh - 50px)}.uwftcore-modal-common h3{font-weight:bold;margin:10px auto}.uwftcore-modal-common>p{margin:10px auto}.dark .uwftcore-fullscreen-inner{background-color:#333}.uwftcore-import-options{max-width:550px;height:initial}.uwftcore-import-method{background-color:#e5e5e5;border:none;padding:10px 10px;cursor:pointer;width:100%;background-size:30px;background-position:15px;background-repeat:no-repeat;margin-bottom:10px}.uwftcore-import-method .uwftcore-import-method-title{color:#ff4713;font-size:16px}.uwftcore-import-method .uwftcore-import-method-desc{font-size:12px}.dark .uwftcore-import-method{background-color:#404040}.dark .uwftcore-import-method .uwftcore-import-method-title{color:#20b8e3}#uwt-status-stack{position:fixed;left:16px;bottom:150px;z-index:99990;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.uwt-pill{display:flex;align-items:center;gap:.5em;margin:0;padding:.25em .8em;border-radius:999px;background:rgba(17,24,39,.92);color:#f9fafb;box-shadow:0 2px 8px rgba(0,0,0,.4);font-size:14px;line-height:1.2;white-space:nowrap;user-select:none}.uwt-pill p{margin:0}.uwt-pill p:nth-child(2){font-size:18px;font-weight:bold;font-variant-numeric:tabular-nums}.uwtnm-text{font-size:18px}.uwtnm-toggle{display:none}.uwtnm-wrap-collapsible{margin-bottom:1.2rem}#uwtnm-collapsed-map{display:none}.uwtnm-lbl-toggle{display:block;font-weight:bold;font-family:monospace;font-size:1.2rem;text-transform:uppercase;text-align:center;padding:1rem;color:#fff;background:#df471c;cursor:pointer;border-radius:7px;transition:all .25s ease-out}.uwtnm-lbl-toggle:hover{color:#d3d3d3}.uwtnm-lbl-toggle::before{content:" ";display:inline-block;border-top:5px solid rgba(0,0,0,0);border-bottom:5px solid rgba(0,0,0,0);border-left:5px solid currentColor;vertical-align:middle;margin-right:.7rem;transform:translateY(-2px);transition:transform .2s ease-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle::before{transform:rotate(90deg) translateX(-3px)}.uwtnm-collapsible-content{max-height:0px;overflow:hidden;transition:max-height .25s ease-in-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle+.uwtnm-collapsible-content{max-height:9999999pt}.uwtnm-toggle:checked+.uwtnm-lbl-toggle{border-bottom-right-radius:0;border-bottom-left-radius:0}.uwtnm-map{height:400px}.uwtoi-label{font-weight:bold}.uwtoi-container{margin-bottom:10px}.uwtoi-dupe-map{padding:0 1rem;margin-top:-1rem}.uwtoi-linkspan::before{content:" · "}.uwtoi-linkspan:nth-child(2)::before{content:""}.uwtoi-experimental{color:#ff8c00;position:relative;display:inline-block}.uwtoi-tttitle{color:#ff8c00;font-weight:bold}.uwtoi-experimental .uwtoi-tooltip{visibility:hidden;width:320px;background-color:rgba(0,0,0,.8);color:#fff;text-align:center;padding:12px;position:absolute;z-index:1;bottom:150%;left:50%;margin-left:-160px;border-radius:10px;pointer-events:none}.uwtoi-experimental .uwtoi-tooltip::after{content:"";position:absolute;top:100%;left:50%;z-index:1;margin-left:-10px;border-width:10px;border-style:solid;border-color:rgba(0,0,0,.8) rgba(0,0,0,0) rgba(0,0,0,0) rgba(0,0,0,0)}.uwtoi-experimental:hover .uwtoi-tooltip{visibility:visible}.uwtoi-address{font-size:1.1em;font-weight:bold;color:#000}.dark .uwtoi-address{color:#fff}.uwftes-text{font-size:18px}.uwftes-count{font-size:18px;display:flex;margin:0px 0px 0px 0px}.uwftes-parent{display:flex;justify-content:space-between;margin:16px 0px 0px}.uwtkr2-eds-highlighted{border-width:1px;border-color:#df471c}.dark .uwtkr2-eds-highlighted{border-color:#20b8e3}.uwtkr2-eds-btn-key::before,.uwtkr2-key-label,.uwtkr2-key-span{color:#ff6d38;font-family:monospace;text-transform:none;display:inline-block}.uwtkr2-key-span-wildcard{color:#20b8e3}.uwtkr2-eds-btn-key-no-highlight::before{color:#000}.dark .uwtkr2-eds-btn-key-no-highlight::before{color:#fff}.uwtkr2-eds-btn-key-pad::before,.uwtkr2-key-label{margin-right:5px}.uwtkr2-eds-btn-key.is-selected::before,.uwtkr2-eds-btn-key.wf-button--primary::before{color:#000}.uwtkr2-photo-card-label{font-size:1.9em;display:inline-block;padding:0 .5em}.uwtkr2-eds-key-bracket-A::before{content:"A"}.uwtkr2-eds-key-bracket-B::before{content:"B"}.uwtkr2-eds-key-bracket-C::before{content:"C"}.uwtkr2-eds-key-bracket-D::before{content:"D"}.uwtkr2-eds-key-bracket-E::before{content:"E"}.uwtkr2-eds-key-bracket-F::before{content:"F"}.uwtkr2-eds-key-bracket-G::before{content:"G"}.uwtkr2-eds-key-bracket-H::before{content:"H"}.uwtkr2-eds-key-bracket-I::before{content:"I"}.uwtkr2-eds-key-bracket-J::before{content:"J"}.uwtkr2-eds-key-bracket-K::before{content:"K"}.uwtkr2-eds-key-bracket-L::before{content:"L"}.uwtkr2-eds-key-bracket-M::before{content:"M"}.uwtkr2-eds-key-bracket-N::before{content:"N"}.uwtkr2-eds-key-bracket-O::before{content:"O"}.uwtkr2-eds-key-bracket-P::before{content:"P"}.uwtkr2-eds-key-bracket-Q::before{content:"Q"}.uwtkr2-eds-key-bracket-R::before{content:"R"}.uwtkr2-eds-key-bracket-S::before{content:"S"}.uwtkr2-eds-key-bracket-T::before{content:"T"}.uwtkr2-eds-key-bracket-U::before{content:"U"}.uwtkr2-eds-key-bracket-V::before{content:"V"}.uwtkr2-eds-key-bracket-W::before{content:"W"}.uwtkr2-eds-key-bracket-X::before{content:"X"}.uwtkr2-eds-key-bracket-Y::before{content:"Y"}.uwtkr2-eds-key-bracket-Z::before{content:"Z"}.uwtkr2-eds-key-bracket-0::before{content:"0"}.uwtkr2-eds-key-bracket-1::before{content:"1"}.uwtkr2-eds-key-bracket-2::before{content:"2"}.uwtkr2-eds-key-bracket-3::before{content:"3"}.uwtkr2-eds-key-bracket-4::before{content:"4"}.uwtkr2-eds-key-bracket-5::before{content:"5"}.uwtkr2-eds-key-bracket-6::before{content:"6"}.uwtkr2-eds-key-bracket-7::before{content:"7"}.uwtkr2-eds-key-bracket-8::before{content:"8"}.uwtkr2-eds-key-bracket-9::before{content:"9"}.uwtkr2-eds-key-bracket-Esc::before{content:"Esc"}.uwtkr2-eds-key-bracket-Tab::before{content:"Tab"}.uwtkr2-eds-key-bracket-Enter::before{content:"Enter"}.uwtkr2-dupe-key-box{width:0;z-index:10}.uwtkr2-dupe-key-box>div{width:1.7em;margin:5px;text-align:center;font-weight:bold;font-size:1.3em;border:1px solid #000;pointer-events:none;background:rgba(0,0,0,.5);color:#ff6d38}.uwtkr2-card app-review-text-diff{display:inline-block}.uwtrct-outer{position:fixed;left:16px;bottom:112px;z-index:99990;display:flex;align-items:center;gap:.5em;margin:0;padding:.25em .8em;border-radius:999px;background:rgba(17,24,39,.92);color:#f9fafb;box-shadow:0 2px 8px rgba(0,0,0,.4);font-size:14px;line-height:1.2;cursor:pointer;user-select:none}.uwtrct-outer p{margin:0}.uwtrct-outer p:nth-child(2){font-size:18px;font-weight:bold;color:#20b8e3;font-variant-numeric:tabular-nums}.uwtemli-modal{text-align:center}.uwtemli-modal h2{margin-bottom:10px}.uwtegas-options-modal{max-width:700px;height:initial}.uwtegas-table{width:100%}.uwtegas-table td{border:none}.uwtegas-table input{background-color:#ddd;width:100%;padding:5px}.dark .uwtegas-table input{background-color:#222}.uwtegas-cancel-btn{color:#000}.dark .uwtegas-cancel-btn{color:red}.uwftat-outer p:nth-child(2){color:#20b8e3}.uwtdme-hidden{display:none !important}.uwtwsr-root-new{margin-top:-1rem;grid-gap:1rem !important}.uwtwsr-root-new app-photo-b img{margin:auto}.uwtwsr-root-new .wf-review-card{height:initial;max-height:380px}.uwtwsr-root-new #check-duplicates-card{max-height:initial}.uwtwsr-root-new .wf-image-modal img{max-height:calc((100dvh - 440px)/2)}@media(max-width: 2000px){.uwtwsr-root-new .action-buttons-row{flex-direction:column !important;justify-content:initial !important}}.uwtwsr-thumbs-row{display:flex;flex-direction:row}.uwtwsr-root-new .dont-know-button{margin-left:0 !important;padding:.375rem !important}.uwtwsr-root-new .question-title .question-subtitle-tooltip{margin-left:.5rem;line-height:1.6rem}.uwtwsr-root-new app-question-card .main-section-container{justify-content:space-between}.uwftbdiff-differs{border-bottom:2px solid #ff6d38;background-color:rgba(255,109,56,.3)}#uwtcml-button{position:fixed;left:160px;bottom:64px;z-index:99990;width:40px;height:40px;border-radius:50%;border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}#uwtcml-button:hover{opacity:1}.uwtcml-modal{position:relative;display:flex;flex-direction:column;background:#fff !important;color:#111827 !important;font-size:15px;width:min(1100px,100vw - 50px);height:min(760px,100vh - 50px);max-width:none !important;max-height:none !important}.uwtcml-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}.uwtcml-modal h2{font-size:1.4rem;font-weight:bold;margin-bottom:.6rem}.uwtcml-modal .uwtcml-x{position:absolute;top:8px;right:14px;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}.uwtcml-modal .uwtcml-x:hover{opacity:1}.uwtcml-body{display:flex;flex:1 1 auto;min-height:0;gap:16px}.uwtcml-side{display:flex;flex-direction:column;flex:0 0 280px;min-height:0;gap:8px}.uwtcml-side input{border:1px solid #9ca3af;border-radius:4px;padding:4px 8px;background:#fff;color:#111827}.uwtcml-list{overflow-y:auto;display:flex;flex-direction:column;gap:2px}.uwtcml-item{text-align:left;padding:6px 8px;border:0;border-radius:6px;background:rgba(0,0,0,0);color:inherit;cursor:pointer}.uwtcml-item:hover{background:rgba(128,128,128,.2)}.uwtcml-item.uwtcml-active{background:rgba(32,184,227,.25);font-weight:bold}.uwtcml-detail{flex:1 1 auto;min-width:0;overflow-y:auto}.uwtcml-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}.uwtcml-head h3{font-size:1.15rem;font-weight:bold;margin:0}.uwtcml-tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:bold;color:#fff;white-space:nowrap}.uwtcml-tag--accepted{background:#08ca00;color:#000}.uwtcml-tag--queue{background:#1e88e5}.uwtcml-tag--rejected{background:#e53935}.uwtcml-info{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:16px}.uwtcml-wayspot-details{flex:1 1 260px;min-width:220px;background-color:#e4e4e4;border-radius:10px;padding:10px}.uwtcml-modal.uwt-dark .uwtcml-wayspot-details{background-color:#444}.uwtcml-wd-image{width:100%;border-radius:10px;margin-bottom:6px;cursor:pointer}.uwtcml-wd-description{text-align:left;white-space:pre-wrap}.uwtcml-satmap{flex:1 1 320px;min-width:260px;min-height:300px;border-radius:10px;overflow:hidden}.uwtcml-edits-container{margin-bottom:20px}.uwtcml-edits-summary-header{font-weight:bold;margin-bottom:4px}.uwtcml-edit-summary-table{width:100%;border-collapse:collapse}.uwtcml-edit-summary-table td{padding:3px 6px;border:none;border-bottom:1px solid rgba(128,128,128,.3)}.uwtcml-edit-summary-table td:first-child{width:100px;white-space:nowrap}.uwtcml-edit-summary-table td:last-child{width:95px;text-align:right}.uwftsc-normal{color:#20b8e3}.uwftsc-low{color:#44ce1b}.uwftsc-mid{color:#bbdb44}.uwftsc-med{color:#f7e379}.uwftsc-high{color:#f2a134}.uwftsc-extreme{color:#e51f1f}.uwtnsh-dropdown{cursor:pointer}.uwtnsh-dropdown .uwtnsh-expanded{display:none}.uwtnsh-dropdown .uwtnsh-dd-left{float:left;margin-right:7px;display:block}.uwtnsh-dropdown .uwtnsh-dd-right{float:right}app-submissions app-details-pane app-submission-tag-set+span{display:none}.uwtnsh-verified::after{content:" ✓";color:green;font-family:initial}.dark .uwtnsh-verified::after{color:lime}.uwftpb-blocked-hidden{display:none}.uwftpb-header{font-weight:bold}.uwftpb-table{width:100%;border-collapse:collapse}.uwftpb-table td:first-child{width:100px;border:none}.uwftpb-table td:last-child{width:95px;text-align:right;border:none}#uwtvd-display{position:fixed;left:64px;bottom:26px;z-index:99990;padding:.1em .7em;border-radius:999px;background:rgba(17,24,39,.85);font-size:12px;line-height:1.3;box-shadow:0 2px 8px rgba(0,0,0,.35);pointer-events:none}#uwtvd-display span{white-space:nowrap;font-weight:bold;color:#20b8e3}.uwtvd-update-available #uwtvd-display{animation:blink-animation 2s steps(2, start) infinite}.uwtvd-update-available #uwtvd-display span{color:red}@keyframes blink-animation{to{visibility:hidden}}.uwtSTH-bg{position:fixed;top:0;left:0;height:100vh;width:100vw;background-color:rgba(0,0,0,.5);z-index:100000}.uwtSTH-popup{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);width:calc(100vw - 50px);height:calc(100vh - 50px);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px}.dark .uwtSTH-popup{background-color:#333}.uwtSTH-popup h1{margin-bottom:20px;width:calc(70% - 70px);float:left}.uwtSTH-search{width:30%;padding:.7em;font-size:1.1em;background-color:#ddd;float:right;display:none}.dark .uwtSTH-search{background-color:#222}.uwtSTH-searchMatch{background-color:#ff0;color:#000;display:inline-block;box-shadow:0 0 4px rgba(0,0,0,.5);white-space:pre}.uwtSTH-close{z-index:2;font-size:2em;cursor:pointer;opacity:.5;float:right;margin-left:14px}.uwtSTH-close:hover{opacity:1}.uwtSTH-box{height:calc(100% - 60px);display:flex;background-color:#ddd;clear:both}.dark .uwtSTH-box{background-color:#222}.uwtSTH-box>div{height:100%}.uwtSTH-list{width:40%;background-color:#eee;overflow-y:scroll;border-right:3px solid #fff}.dark .uwtSTH-list{background-color:#2a2a2a;border-right:3px solid #333}.uwtSTH-chat{width:60%;overflow-y:scroll;padding-bottom:15px}.uwtSTH-listitem{padding:10px;border-bottom:3px solid #fff;cursor:pointer;white-space:nowrap}.uwtSTH-listitem p{overflow:hidden;text-overflow:ellipsis}.dark .uwtSTH-listitem{border-bottom:3px solid #333}.uwtSTH-selected{background-color:#ddd;cursor:default}.dark .uwtSTH-selected{background-color:#222}.uwtSTH-message{padding:15px;clear:both}.uwtSTH-chatBubble{border-radius:8px;max-width:270px;padding:10px}.uwtSTH-chatBubble a{text-decoration:underline}.uwtSTH-msgState-sent .uwtSTH-chatBubble a{color:#fff}.uwtSTH-msgState-received .uwtSTH-chatBubble a{color:#000}.uwtSTH-msgState-sent .uwtSTH-chatBubble{background-color:#d85813;color:#fff;float:right}.uwtSTH-msgState-received .uwtSTH-chatBubble{background-color:#fff;color:#000;float:left}.uwtSTH-message>p{font-size:.8em;opacity:.8;margin:3px}.uwtSTH-msgState-received>p{text-align:left}.uwtSTH-msgState-sent>p{text-align:right}.uwtSTH-mt-option{background-color:#eee;padding:5px;margin-top:5px;border:1px solid #ccc}`);
     document.querySelector("head")?.appendChild(elem);
     return elem;
   };

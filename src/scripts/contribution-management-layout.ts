@@ -17,9 +17,8 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 import { CheckboxEditor, register } from "../core";
-import { untilTruthy, makeChildNode } from "../utils";
+import { untilTruthy, makeChildNode, uwtGoogle } from "../utils";
 import { AnyContribution, AnyEditContribution, ContributionStatus, ContributionType, EditContributionType, SubmissionsResult } from "../types";
-import { AppSubmissionsListItemElement } from "../unsafe";
 
 import "./contribution-management-layout.css";
 
@@ -67,6 +66,12 @@ const STATUS_MAP: Record<ContributionStatus, DisplayedTag> = {
   },
 };
 
+const TAG_COLORS: Record<DisplayedTag["style"], string> = {
+  accepted: "#08CA00",
+  queue: "#1E88E5",
+  rejected: "#E53935",
+};
+
 export default () => {
   register()({
     id: "contribution-management-layout",
@@ -78,7 +83,7 @@ export default () => {
       showSummaryOfEdits: true,
     },
     sessionData: {},
-    initialize: (toolbox, _logger, config) => {
+    initialize: (toolbox, logger, config) => {
       config.setUserEditable("showCurrentWayspotInfobox", {
         label: "Display current Wayspot details and interactive map for edits",
         editor: new CheckboxEditor(),
@@ -88,166 +93,167 @@ export default () => {
         editor: new CheckboxEditor(),
       });
 
-      const detectAppListItems = async (nominations: SubmissionsResult) => {
-        const parentContainer = await untilTruthy(() => document.querySelector(".submissions"));
-        // Scan existing elements
-        const existingItems = parentContainer.querySelectorAll<AppSubmissionsListItemElement>("app-submissions-list-item");
-        for (const item of existingItems) formatItem(item, nominations.submissions);
-        // Set up MutationObserver for new elements
-        const observer = new MutationObserver((mutations) => {
-          for (const mutation of mutations) {
-            for (const node of mutation.addedNodes) {
-              if (node.nodeName === "APP-SUBMISSIONS-LIST-ITEM") {
-                formatItem(node as AppSubmissionsListItemElement, nominations.submissions);
-              }
+      // ---- redesign: the Contribution Management page markup (app-submissions-list-item and Angular's
+      // internal data) this addon used to rewrite is gone. The same information is now shown in a window
+      // opened with a button at the bottom left (next to the Review history button): all Wayspots you have
+      // edits or photos for, with the Wayspot's current details, a map, and a summary of your edits.
+      let nominations: AnyContribution[] | null = null;
+      let mapSession = 0;
+
+      const makeTag = (tag: DisplayedTag) => {
+        const span = document.createElement("span");
+        span.className = `uwtcml-tag uwtcml-tag--${tag.style}`;
+        span.textContent = tag.label;
+        return span;
+      };
+
+      const tagFor = (data: AnyEditContribution): DisplayedTag => wasOverturned(data)
+        ? { style: "accepted", label: "Overturned" }
+        : STATUS_MAP[data.status];
+
+      const generateEditSummaryTable = (edits: AnyEditContribution[], type: EditContributionType) => {
+        // Sort edits by date in descending order (most recent to oldest)
+        const sorted = [...edits].sort((a, b) => b.order - a.order);
+        const table = document.createElement("table");
+        table.classList.add("uwtcml-edit-summary-table");
+        for (const edit of sorted) {
+          const content = (() => {
+            switch (type) {
+              case ContributionType.EDIT_TITLE: return edit.title;
+              case ContributionType.EDIT_DESCRIPTION: return edit.description;
+              case ContributionType.EDIT_LOCATION: return `${edit.lat}, ${edit.lng}`;
+              default: return undefined;
             }
-          }
+          })();
+          const row = table.insertRow();
+          makeChildNode(row, "td", edit.day);
+          makeChildNode(row, "td", content);
+          makeChildNode(row, "td").appendChild(makeTag(tagFor(edit)));
+        }
+        return table;
+      };
+
+      const addSatMap = async (mapDiv: HTMLElement, poi: AnyEditContribution["poiData"], edits: AnyEditContribution[], session: number) => {
+        // the page's own Google Maps API (not the userscript sandbox's view of the window) must be loaded
+        for (let i = 0; i < 40 && !uwtGoogle()?.maps; i++) await new Promise(r => setTimeout(r, 250));
+        if (session !== mapSession) return;
+        const G = uwtGoogle();
+        if (!G?.maps) {
+          mapDiv.textContent = "Google Maps is not loaded on this page. Open a Wayfarer page that shows a map (for example a review), then reopen this window.";
+          return;
+        }
+
+        const { lat, lng } = poi;
+        const svMap = new G.maps.Map(mapDiv, {
+          center: { lat, lng },
+          mapTypeId: "hybrid",
+          zoom: 17,
+          scaleControl: true,
+          scrollwheel: true,
+          gestureHandling: "greedy",
+          mapTypeControl: true,
+          tiltInteractionEnabled: true,
         });
-        observer.observe(parentContainer, {
-          childList: true,
-          subtree: true,
-        });
-      };
+        const bounds = new G.maps.LatLngBounds();
+        bounds.extend({ lat, lng });
 
-      const formatItem = (item: AppSubmissionsListItemElement, nominations: AnyContribution[]) => {
-        const data = item.__ngContext__[22];
-        modifyPhoto(item, data);
-        if (data.type !== ContributionType.NOMINATION) {
-          updateRejectionLabels(item, data);
-        }
-        item.addEventListener("click", () => {
-          void interceptDetailsPane(data, nominations);
-        });
-      };
-
-      const modifyPhoto = (item: AppSubmissionsListItemElement, data: AnyContribution) => {
-        const imageElements = item.querySelectorAll("img");
-        if (imageElements.length > 1) {
-          const selectedImage = imageElements[1];
-          selectedImage.classList.add("uwtcml-list-image");
-          if (data.type === "PHOTO") {
-            selectedImage.src = data.imageUrl;
-          }
-        }
-      };
-
-      const updateRejectionLabels = (item: AppSubmissionsListItemElement, data: AnyEditContribution) => {
-        // Remove uwtcml-overturned class if already present
-        const overturnedTags = item.querySelectorAll(".uwtcml-overturned");
-        for (let i = overturnedTags.length - 1; i >= 0; i--) overturnedTags[i].remove();
-        // If the current Wayspot data matches the rejected edit data, mark it as "overturned".
-        if (wasOverturned(data)) {
-          const nominationTagSet = item.querySelector("app-submission-tag-set");
-          if (nominationTagSet) {
-            const newTag = makeChildNode(nominationTagSet, "app-submission-tag");
-            newTag.classList.add("mr-1", "uwtcml-overturned");
-            const newTagContent = makeChildNode(newTag, "div");
-            newTagContent.classList.add("submission-tag", "ng-star-inserted");
-            const newSpan = makeChildNode(newTagContent, "span", "Overturned");
-            newSpan.classList.add("submission-tag--accepted");
-          }
-        }
-      };
-
-      const interceptDetailsPane = async (data: AnyContribution, nominations: AnyContribution[]) => {
-        const containers = document.querySelectorAll(".uwtcml-details-container");
-        for (let i = containers.length - 1; i >= 0; i--) containers[i].remove();
-        const summaries = document.querySelectorAll(".uwtcml-edits-summary");
-        for (let i = summaries.length - 1; i >= 0; i--) summaries[i].remove();
-        const detailsSections = document.querySelectorAll(".details-pane__section");
-
-        // Unhide things that may have been hidden on the Edits page
-        const hiddenItems = document.querySelectorAll(".uwtcml-hidden");
-        for (let i = hiddenItems.length - 1; i >= 0; i--) {
-          hiddenItems[i].classList.remove(".uwtcml-hidden");
-        }
-
-        if (data.type === ContributionType.NOMINATION) return;
-
-        const detailsContainer = document.createElement("div");
-        detailsContainer.classList.add("uwtcml-details-container");
-        let mapDiv: HTMLElement | null = null;
-        let infoboxDiv: HTMLElement | null = null;
-
-        if (config.get("showCurrentWayspotInfobox")) {
-          infoboxDiv = makeChildNode(detailsContainer, "div");
-          infoboxDiv.classList.add("uwtcml-details-column");
-          mapDiv = makeChildNode(detailsContainer, "div", "Location");
-          mapDiv.classList.add("uwtcml-map-column");
-
-          makeChildNode(infoboxDiv, "div", "Current Wayspot Details");
-          const wayspotDetails = makeChildNode(infoboxDiv, "div");
-          wayspotDetails.classList.add("uwtcml-wayspot-details");
-
-          // Title
-          const titleContainer = makeChildNode(wayspotDetails, "div");
-          titleContainer.classList.add("uwtcml-wayspot-title-container");
-          const title = makeChildNode(titleContainer, "div", data.poiData.title);
-          title.classList.add("uwtcml-wd-title");
-
-          // Status
-          const statusContainer = makeChildNode(titleContainer, "div");
-          statusContainer.classList.add("flex", "flex-wrap", "nominations-item__tags");
-          const statusTag = makeChildNode(statusContainer, "div");
-          statusTag.classList.add("submission-tag", "ng-star-inserted");
-
-          if (data.poiData.state === "LIVE") {
-            const statusSpan = makeChildNode(statusTag, "span", "Live");
-            statusSpan.classList.add("submission-tag--accepted", "ng-star-inserted");
-            statusContainer.classList.add("uwtcml-status-live");
-          } else if (data.poiData.state === "RETIRED") {
-            const statusSpan = makeChildNode(statusTag, "span", "Retired");
-            statusSpan.classList.add("submission-tag--rejected", "ng-star-inserted");
-            statusContainer.classList.add("uwtcml-status-retired");
-            statusContainer.title = `Wayspot retired on ${data.poiData.lastUpdateDate}`;
-          }
-
-          // Image
-          const image = makeChildNode(wayspotDetails, "img") as HTMLImageElement;
-          image.classList.add("uwtcml-wd-image");
-          image.src = data.poiData.imageUrl;
-
-          // Description
-          const description = makeChildNode(wayspotDetails, "div", data.poiData.description || "<No Description>");
-          description.classList.add("uwtcml-wd-description");
-
-          image.addEventListener("click", () => {
-            window.open(`${data.poiData.imageUrl}=s0`, "_blank");
+        // every suggested location that differs from the Wayspot's current one, coloured by its status
+        let drawn = 0;
+        for (const edit of edits) {
+          if (edit.type !== ContributionType.EDIT_LOCATION || (edit.lat === lat && edit.lng === lng)) continue;
+          const color = TAG_COLORS[tagFor(edit).style];
+          const suggested = { lat: edit.lat, lng: edit.lng };
+          new G.maps.Marker({
+            map: svMap,
+            position: suggested,
+            icon: generateSvgMapMarker(color),
+            title: `${edit.day}: ${tagFor(edit).label}`,
+            zIndex: 4,
           });
-
-          if (detailsSections.length >= 1) {
-            // Hide the "Current Wayspot" data
-            if (data.type === ContributionType.PHOTO) {
-              const elementsToHide = detailsSections[0].querySelectorAll(":scope > *:nth-child(-n+2)");
-              for (const element of elementsToHide) element.classList.add("uwtcml-hidden");
-            } else {
-              detailsSections[0].children[0].classList.add("uwtcml-hidden");
-            }
-          }
-          if (detailsSections.length >= 2) {
-            // For the static map
-            const elementsToHide = detailsSections[1].querySelectorAll(":scope > *:nth-child(-n+2");
-            for (const element of elementsToHide) element.classList.add("uwtcml-hidden");
-          }
+          const polylineOptions: google.maps.PolylineOptions = {
+            map: svMap,
+            path: [{ lat, lng }, suggested],
+            strokeOpacity: 1,
+            geodesic: true,
+          };
+          new G.maps.Polyline({
+            ...polylineOptions,
+            strokeColor: color,
+            strokeWeight: 2,
+            zIndex: 2,
+            icons: [{ icon: {
+              path: "M 0,0 3,6 M 0,0 -3,6",
+            }}],
+          });
+          new G.maps.Polyline({
+            ...polylineOptions,
+            strokeColor: "#ffffff",
+            strokeWeight: 6,
+            zIndex: 1,
+            icons: [{ icon: {
+              path: "M 0,0 1,2 M 0,0 -1,2",
+            }}],
+          });
+          bounds.extend(suggested);
+          drawn++;
         }
 
-        const secondDetailsSection = detailsSections[1];
-        if (secondDetailsSection) {
-          secondDetailsSection.parentNode!.insertBefore(detailsContainer, secondDetailsSection);
+        new G.maps.Marker({
+          map: svMap,
+          position: { lat, lng },
+          icon: generateSvgMapMarker("#000000"),
+          title: "Current Wayspot location",
+          zIndex: 3,
+        });
+
+        if (drawn > 0) {
+          G.maps.event.addListenerOnce(svMap, "bounds_changed", function (this: google.maps.Map) {
+            if ((this.getZoom() ?? 20) > 17) this.setZoom(17);
+          });
+          svMap.fitBounds(bounds);
+        }
+      };
+
+      const renderDetail = (detail: HTMLElement, wayspotEdits: AnyEditContribution[]) => {
+        detail.innerHTML = "";
+        const session = ++mapSession;
+        const latest = [...wayspotEdits].sort((a, b) => b.order - a.order)[0];
+        const poi = latest.poiData;
+
+        const head = makeChildNode(detail, "div");
+        head.className = "uwtcml-head";
+        makeChildNode(head, "h3", poi.title || "(untitled)");
+        if (poi.state === "LIVE") {
+          makeChildNode(head, "span", "Live").className = "uwtcml-tag uwtcml-tag--accepted";
+        } else if (poi.state === "RETIRED") {
+          const retired = makeChildNode(head, "span", "Retired");
+          retired.className = "uwtcml-tag uwtcml-tag--rejected";
+          retired.title = `Wayspot retired on ${poi.lastUpdateDate}`;
         }
 
         if (config.get("showCurrentWayspotInfobox")) {
-          void addSatMap(data, mapDiv!, infoboxDiv!);
+          const info = makeChildNode(detail, "div");
+          info.className = "uwtcml-info";
+          const details = makeChildNode(info, "div");
+          details.className = "uwtcml-wayspot-details";
+          if (typeof poi.imageUrl === "string" && /^https:\/\//.test(poi.imageUrl)) {
+            const image = makeChildNode(details, "img") as HTMLImageElement;
+            image.className = "uwtcml-wd-image";
+            image.src = poi.imageUrl;
+            image.title = "Click to open the full-size image";
+            image.addEventListener("click", () => {
+              window.open(`${poi.imageUrl}=s0`, "_blank");
+            });
+          }
+          makeChildNode(details, "div", poi.description || "<No Description>").className = "uwtcml-wd-description";
+          const mapDiv = makeChildNode(info, "div");
+          mapDiv.className = "uwtcml-satmap";
+          void addSatMap(mapDiv, poi, wayspotEdits, session);
         }
 
-        if (config.get("showSummaryOfEdits") && data.type.startsWith("EDIT")) {
-          const wayspotEdits = findWayspotEdits(data, nominations);
-
-          // Create container for all edit tables
-          const editsSummaryContainer = document.createElement("div");
-          editsSummaryContainer.classList.add("uwtcml-edits-summary");
-
-          // Check if there are edits for each type and insert containers accordingly
+        if (config.get("showSummaryOfEdits")) {
+          const summary = makeChildNode(detail, "div");
+          summary.className = "uwtcml-edits-summary";
           const editTypes: { type: EditContributionType, label: string }[] = [
             {
               type: ContributionType.EDIT_TITLE,
@@ -260,33 +266,117 @@ export default () => {
               label: "Your Location Edits",
             },
           ];
-
+          let any = false;
           for (const editType of editTypes) {
-            if (wayspotEdits.some(edit => edit.type === editType.type)) {
-              const editsContainer = makeChildNode(editsSummaryContainer, "div");
-              editsContainer.classList.add("uwtcml-edits-container");
-              const editsHeader = makeChildNode(editsContainer, "div", editType.label);
-              editsHeader.classList.add("uwtcml-edits-summary-header");
-
-              const edits = wayspotEdits.filter(n => n.type === editType.type);
-              const editsTable = generateEditSummaryTable(edits, editType.type);
-              editsContainer.appendChild(editsTable);
-            }
+            const edits = wayspotEdits.filter(n => n.type === editType.type);
+            if (edits.length === 0) continue;
+            any = true;
+            const editsContainer = makeChildNode(summary, "div");
+            editsContainer.classList.add("uwtcml-edits-container");
+            makeChildNode(editsContainer, "div", editType.label).classList.add("uwtcml-edits-summary-header");
+            editsContainer.appendChild(generateEditSummaryTable(edits, editType.type));
           }
-
-          detailsContainer.parentNode!.insertBefore(editsSummaryContainer, detailsContainer);
+          if (!any) makeChildNode(summary, "p", "No title, description or location edits for this Wayspot.");
         }
       };
 
-      toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", detectAppListItems);
+      const renderOverview = (body: HTMLElement, all: AnyContribution[]) => {
+        body.innerHTML = "";
+        const edits = all.filter((n): n is AnyEditContribution => n.type !== ContributionType.NOMINATION && !!n.poiData && !!n.poiData.id);
+        const byWayspot = new Map<string, AnyEditContribution[]>();
+        for (const edit of edits) {
+          let group = byWayspot.get(edit.poiData.id);
+          if (!group) {
+            group = [];
+            byWayspot.set(edit.poiData.id, group);
+          }
+          group.push(edit);
+        }
+        const latestOrder = (g: AnyEditContribution[]) => Math.max(...g.map(e => e.order));
+        const groups = Array.from(byWayspot.values()).sort((a, b) => latestOrder(b) - latestOrder(a));
+        if (groups.length === 0) {
+          makeChildNode(body, "p", "You have no edits or photo submissions yet.");
+          return;
+        }
+
+        const side = makeChildNode(body, "div");
+        side.className = "uwtcml-side";
+        const search = makeChildNode(side, "input") as HTMLInputElement;
+        search.type = "text";
+        search.placeholder = "Search Wayspots";
+        const list = makeChildNode(side, "div");
+        list.className = "uwtcml-list";
+        const detail = makeChildNode(body, "div");
+        detail.className = "uwtcml-detail";
+
+        const items: { button: HTMLElement, title: string }[] = [];
+        for (const group of groups) {
+          const poi = [...group].sort((a, b) => b.order - a.order)[0].poiData;
+          const button = makeChildNode(list, "button", `${poi.title || "(untitled)"} (${group.length})`);
+          button.className = "uwtcml-item";
+          button.addEventListener("click", () => {
+            for (const item of items) item.button.classList.toggle("uwtcml-active", item.button === button);
+            renderDetail(detail, group);
+          });
+          items.push({ button, title: (poi.title || "").toLowerCase() });
+        }
+        search.addEventListener("input", () => {
+          const q = search.value.trim().toLowerCase();
+          for (const item of items) item.button.style.display = item.title.includes(q) ? "" : "none";
+        });
+        items[0].button.click();
+      };
+
+      const openOverview = async () => {
+        const { container, dismiss } = await toolbox.createModal("uwtcml-modal");
+        if (document.documentElement.classList.contains("dark") || document.body.classList.contains("dark")) {
+          container.classList.add("uwt-dark");
+        }
+        const close = makeChildNode(container, "button", "\u00d7");
+        close.className = "uwtcml-x";
+        close.addEventListener("click", () => {
+          mapSession++;
+          dismiss();
+        });
+        makeChildNode(container, "h2", "Edits by Wayspot");
+        const body = makeChildNode(container, "div");
+        body.className = "uwtcml-body";
+
+        if (nominations === null) {
+          makeChildNode(body, "p", "Loading contributions...");
+          try {
+            const data = await toolbox.makeRequest("GET", "/api/v1/vault/manage");
+            if (data && data.submissions) nominations = data.submissions;
+          } catch (e) {
+            logger.error(e);
+          }
+          body.innerHTML = "";
+        }
+        if (nominations === null) {
+          makeChildNode(body, "p", "Could not load your contributions.");
+          return;
+        }
+        renderOverview(body, nominations);
+      };
+
+      const addButton = async () => {
+        const body = await untilTruthy(() => document.body);
+        if (document.getElementById("uwtcml-button")) return;
+        const button = makeChildNode(body, "button") as HTMLButtonElement;
+        button.id = "uwtcml-button";
+        button.type = "button";
+        button.title = "Edits by Wayspot";
+        button.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 20h9\"/><path d=\"M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z\"/></svg>";
+        button.addEventListener("click", () => { void openOverview(); });
+      };
+      void addButton();
+
+      toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", (data: SubmissionsResult) => {
+        if (data && data.submissions) nominations = data.submissions;
+      });
     },
   });
 };
-
-const findWayspotEdits = (data: AnyEditContribution, nominations: AnyContribution[]) =>
-  nominations
-    .filter(n => n.type !== ContributionType.NOMINATION)
-    .filter(n => n.poiData.id === data.poiData.id);
 
 const wasOverturned = (data: AnyEditContribution) =>
   data.status === ContributionStatus.REJECTED &&
@@ -296,125 +386,6 @@ const wasOverturned = (data: AnyEditContribution) =>
     (data.type === ContributionType.EDIT_LOCATION && data.lat === data.poiData.lat && data.lng === data.poiData.lng) ||
     (data.type === ContributionType.PHOTO && data.imageUrl === data.poiData.imageUrl)
   );
-
-const generateNominationTag = (data: AnyEditContribution) => {
-  const tag: DisplayedTag = wasOverturned(data)
-    ? { style: "accepted", label: "Overturned" }
-    : STATUS_MAP[data.status];
-  const asTag = document.createElement("app-submission-tag");
-  const subTag = makeChildNode(asTag, "div");
-  subTag.classList.add("submission-tag");
-  makeChildNode(subTag, "span", tag.label).classList.add(`submission-tag--${tag.style}`);
-  return asTag;
-};
-
-const generateEditSummaryTable = (edits: AnyEditContribution[], type: EditContributionType) => {
-  // Sort edits by date in descending order (most recent to oldest)
-  edits.sort((a, b) => b.order - a.order);
-
-  const table = document.createElement("table");
-  table.classList.add("uwtcml-edit-summary-table");
-
-  // Populate table with edit data
-  for (const edit of edits) {
-    const content = (() => {
-      switch (type) {
-        case ContributionType.EDIT_TITLE: return edit.title;
-        case ContributionType.EDIT_DESCRIPTION: return edit.description;
-        case ContributionType.EDIT_LOCATION: return `${edit.lat}, ${edit.lng}`;
-        default: return undefined;
-      }
-    })();
-    const row = table.insertRow();
-    makeChildNode(row, "td", edit.day);
-    makeChildNode(row, "td", content);
-    const cell3 = makeChildNode(row, "td");
-    cell3.appendChild(generateNominationTag(edit));
-  }
-
-  return table;
-};
-
-const addSatMap = async (selected: AnyEditContribution, mapDiv: HTMLElement, infoboxDiv: HTMLElement) => {
-  await untilTruthy(() => typeof google !== "undefined");
-
-  let svMapElement = document.getElementById("uwft-nomination-satmap");
-  if (!svMapElement) {
-    svMapElement = makeChildNode(mapDiv, "div");
-    svMapElement.classList.add("uwtcml-satmap");
-    svMapElement.id = "uwft-nomination-satmap";
-
-    // Create an image element to track the image's loading status
-    // This helps make sure that the map window is the right height
-    const image = new Image();
-    image.src = selected.poiData.imageUrl;
-    image.style.display = "none";
-
-    image.addEventListener("load", () => {
-      const detailsColumnHeight = parseFloat(getComputedStyle(infoboxDiv).height);
-      svMapElement!.style.height = `${detailsColumnHeight - 31}px`;
-    });
-
-    // Append the image element to the document body to trigger image loading
-    document.body.appendChild(image);
-  }
-
-  const { lat, lng } = selected.poiData;
-  const currentLocation = new google.maps.LatLng(lat, lng);
-  const svMap = new google.maps.Map(svMapElement, {
-    center: { lat, lng },
-    mapTypeId: "hybrid",
-    zoom: 17,
-    scaleControl: true,
-    scrollwheel: true,
-    gestureHandling: "greedy",
-    mapTypeControl: true,
-    tiltInteractionEnabled: true,
-  });
-
-  if (selected.type === ContributionType.EDIT_LOCATION) {
-    if (selected.lat !== lat || selected.lng !== lng) {
-      const suggestedLocation = new google.maps.LatLng(selected.lat, selected.lng);
-      new google.maps.Marker({
-        map: svMap,
-        position: suggestedLocation,
-        icon: generateSvgMapMarker("#08CA00"),
-        zIndex: 4,
-      });
-      const polylineOptions: google.maps.PolylineOptions = {
-        map: svMap,
-        path: [currentLocation, suggestedLocation],
-        strokeOpacity: 1,
-        geodesic: true,
-      };
-      new google.maps.Polyline({
-        ...polylineOptions,
-        strokeColor: "#08CA00",
-        strokeWeight: 2,
-        zIndex: 2,
-        icons: [{ icon: {
-          path: "M 0,0 3,6 M 0,0 -3,6",
-        }}],
-      });
-      new google.maps.Polyline({
-        ...polylineOptions,
-        strokeColor: "#ffffff",
-        strokeWeight: 6,
-        zIndex: 1,
-        icons: [{ icon: {
-          path: "M 0,0 1,2 M 0,0 -1,2",
-        }}],
-      });
-    }
-  }
-
-  new google.maps.Marker({
-    map: svMap,
-    position: { lat, lng },
-    icon: generateSvgMapMarker("#000000"),
-    zIndex: 3,
-  });
-};
 
 const generateSvgMapMarker = (fillColor: string) => {
   const icon = `<?xml version="1.0" standalone="no"?>

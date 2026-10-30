@@ -1,77 +1,205 @@
-img.uwtcml-list-image {
-  width: 8rem !important;
-}
-
-.uwtcml-details-container {
+/* redesign: button (next to the Review history button) and window with the edits per Wayspot */
+#uwtcml-button {
+  position: fixed;
+  left: 160px;
+  bottom: 64px;
+  z-index: 99990;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  background: #111827;
+  color: #f9fafb;
+  cursor: pointer;
   display: flex;
-  /* Allow flex items to wrap to the next line */
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  padding: 0;
+  opacity: 0.75;
+}
+
+#uwtcml-button:hover {
+  opacity: 1;
+}
+
+.uwtcml-modal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: #fff !important;
+  color: #111827 !important;
+  font-size: 15px;
+  width: min(1100px, calc(100vw - 50px));
+  height: min(760px, calc(100vh - 50px));
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.uwtcml-modal.uwt-dark {
+  background: #1f2937 !important;
+  color: #f9fafb !important;
+}
+
+.uwtcml-modal h2 {
+  font-size: 1.4rem;
+  font-weight: bold;
+  margin-bottom: 0.6rem;
+}
+
+.uwtcml-modal .uwtcml-x {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  font-size: 26px;
+  cursor: pointer;
+  opacity: 0.6;
+  background: none;
+  border: 0;
+  color: inherit;
+}
+
+.uwtcml-modal .uwtcml-x:hover {
+  opacity: 1;
+}
+
+.uwtcml-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 16px;
+}
+
+.uwtcml-side {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 280px;
+  min-height: 0;
+  gap: 8px;
+}
+
+.uwtcml-side input {
+  border: 1px solid #9ca3af;
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: #fff;
+  color: #111827;
+}
+
+.uwtcml-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.uwtcml-item {
+  text-align: left;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.uwtcml-item:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.uwtcml-item.uwtcml-active {
+  background: rgba(32, 184, 227, 0.25);
+  font-weight: bold;
+}
+
+.uwtcml-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.uwtcml-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.uwtcml-head h3 {
+  font-size: 1.15rem;
+  font-weight: bold;
+  margin: 0;
+}
+
+.uwtcml-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: bold;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.uwtcml-tag--accepted {
+  background: #08CA00;
+  color: #000;
+}
+
+.uwtcml-tag--queue {
+  background: #1E88E5;
+}
+
+.uwtcml-tag--rejected {
+  background: #E53935;
+}
+
+.uwtcml-info {
+  display: flex;
   flex-wrap: wrap;
-  flex-direction: row;
-}
-
-.uwtcml-map-column {
-  flex: 1 1 50%;
-  min-width: 250px;
-}
-
-.uwtcml-details-column {
-  flex: 1 1 50%;
-  min-width: 250px;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
 .uwtcml-wayspot-details {
+  flex: 1 1 260px;
+  min-width: 220px;
   background-color: #e4e4e4;
   border-radius: 10px;
   padding: 10px;
-  margin-top: 10px;
-  margin-right: 20px;
 }
 
-.dark .uwtcml-wayspot-details {
+.uwtcml-modal.uwt-dark .uwtcml-wayspot-details {
   background-color: #444444;
-}
-
-.uwtcml-wayspot-title-container {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.uwtcml-wayspot-title-container .uwtcml-wd-title {
-  font-weight: bold;
-  /* Adjust margin as needed */
-  margin-right: 10px;
-}
-
-.uwtcml-status-live {
-  min-width: 35px;
-}
-
-.uwtcml-status-retired {
-  min-width: 60px;
 }
 
 .uwtcml-wd-image {
   width: 100%;
   border-radius: 10px;
-  margin-top: 5px;
-  margin-bottom: 5px;
+  margin-bottom: 6px;
+  cursor: pointer;
 }
 
 .uwtcml-wd-description {
   text-align: left;
+  white-space: pre-wrap;
 }
 
-.uwtcml-hidden {
-  display: none;
+.uwtcml-satmap {
+  flex: 1 1 320px;
+  min-width: 260px;
+  min-height: 300px;
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .uwtcml-edits-container {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .uwtcml-edits-summary-header {
   font-weight: bold;
+  margin-bottom: 4px;
 }
 
 .uwtcml-edit-summary-table {
@@ -79,19 +207,18 @@ img.uwtcml-list-image {
   border-collapse: collapse;
 }
 
+.uwtcml-edit-summary-table td {
+  padding: 3px 6px;
+  border: none;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
 .uwtcml-edit-summary-table td:first-child {
   width: 100px;
-  border: none;
+  white-space: nowrap;
 }
 
 .uwtcml-edit-summary-table td:last-child {
   width: 95px;
   text-align: right;
-  border: none;
-}
-
-.uwtcml-satmap {
-  margin-top: 10px;
-  border-radius: 10px;
-  overflow: "hidden";
 }

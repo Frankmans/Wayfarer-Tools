@@ -17,7 +17,7 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 import { CheckboxEditor, register, SelectBoxEditor } from "../core";
-import { untilTruthy } from "../utils";
+import { untilTruthy, uwtGoogle } from "../utils";
 
 import "./dynamic-maps-everywhere.css";
 
@@ -30,7 +30,25 @@ interface DynamicMap {
 
 interface EnrichedStaticMapElement extends HTMLElement {
   __uwtTools_DME?: DynamicMap,
+  __uwtTools_DME_url?: string,
 }
+
+// redesign: the static maps are no longer necessarily <nia-google-static-map> elements. A static map is
+// recognised by its image URL instead, whether it is an <img> or a background image on any element.
+const STATIC_MAP_PATH = "/maps/api/staticmap";
+const STATIC_MAP_SELECTOR = `nia-google-static-map, img[src*="${STATIC_MAP_PATH}"], [style*="${STATIC_MAP_PATH}"]`;
+
+const getStaticMapUrl = (el: HTMLElement): URL | undefined => {
+  const raw = el instanceof HTMLImageElement
+    ? (el.currentSrc || el.src)
+    : el.style.backgroundImage.match(/url\(["']?(?<url>[^"')]+)["']?\)/)?.groups?.url;
+  if (!raw || !raw.includes(STATIC_MAP_PATH)) return;
+  try {
+    return new URL(raw, location.href);
+  } catch {
+    return;
+  }
+};
 
 interface StaticMapConfig {
   width: number,
@@ -72,9 +90,11 @@ export default () => {
       });
 
       const replaceMap = (staticMap: EnrichedStaticMapElement) => {
-        const bgImageUrl = staticMap.style.backgroundImage.match(/^url\("(?<url>[^"]+)"\)$/)?.groups?.url;
-        if (typeof bgImageUrl !== "undefined") {
-          const url = new URL(bgImageUrl);
+        const url = getStaticMapUrl(staticMap);
+        if (typeof url !== "undefined") {
+          // the page is scanned repeatedly; skip maps that are already showing this exact static map
+          if (staticMap.__uwtTools_DME_url === url.href) return;
+          staticMap.__uwtTools_DME_url = url.href;
           const mapConfig = parseStaticMapUrl(url);
           if (typeof mapConfig === "undefined") return;
           if (mapConfig.height === 0 || mapConfig.width === 0) return;
@@ -86,6 +106,7 @@ export default () => {
           staticMap.classList.add("uwtdme-hidden");
           if (typeof staticMap.__uwtTools_DME === "undefined") {
             const node = document.createElement("div");
+            node.classList.add("uwtdme-container");
             staticMap.parentElement!.insertBefore(node, staticMap);
             staticMap.__uwtTools_DME = createDynamicMap(node, mapConfig, chosenMapType);
           } else {
@@ -102,10 +123,34 @@ export default () => {
         }
       };
 
-      untilTruthy(() => typeof google !== "undefined").then(() => {
-        const currentMaps = document.querySelectorAll<EnrichedStaticMapElement>("nia-google-static-map");
-        for (const map of currentMaps) replaceMap(map);
-        toolbox.observeNodeAttributeChanges("NIA-GOOGLE-STATIC-MAP", ["style"], replaceMap);
+      // the page's own Google Maps API (not the userscript sandbox's view of the window) must be loaded
+      untilTruthy(() => uwtGoogle()?.maps).then(() => {
+        const scan = () => {
+          for (const map of document.querySelectorAll<EnrichedStaticMapElement>(STATIC_MAP_SELECTOR)) {
+            try {
+              replaceMap(map);
+            } catch (ex) {
+              logger.error(ex);
+            }
+          }
+        };
+        scan();
+        let timer: number | undefined;
+        new MutationObserver((mutations) => {
+          // ignore changes inside the interactive maps themselves
+          if (mutations.every(m => m.target instanceof Element && m.target.closest(".uwtdme-container"))) return;
+          if (typeof timer === "undefined") {
+            timer = window.setTimeout(() => {
+              timer = undefined;
+              scan();
+            }, 300);
+          }
+        }).observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["style", "src"],
+        });
       }).catch(logger.error);
     },
   });
@@ -114,7 +159,8 @@ export default () => {
 const createDynamicMap = (container: HTMLElement, mapConfig: StaticMapConfig, chosenMapType: string): DynamicMap => {
   container.style.width = "100%";
   container.style.height = `${mapConfig.height}px`;
-  const map = new google.maps.Map(container, {
+  const G = uwtGoogle()!;
+  const map = new G.maps.Map(container, {
     mapTypeId: chosenMapType,
     scaleControl: true,
     scrollwheel: true,
@@ -142,15 +188,16 @@ const reconfigureDynamicMap = (dMap: DynamicMap, mapConfig: StaticMapConfig, cho
 };
 
 const addDynamicMapMarkers = (dMap: DynamicMap, markers: google.maps.MarkerOptions[]) => {
-  const bounds = new google.maps.LatLngBounds();
+  const G = uwtGoogle()!;
+  const bounds = new G.maps.LatLngBounds();
   for (const marker of markers) {
     bounds.extend(marker.position!);
-    dMap.markers.push(new google.maps.Marker({
+    dMap.markers.push(new G.maps.Marker({
       map: dMap.map,
       ...marker,
     }));
   }
-  google.maps.event.addListenerOnce(dMap.map, "bounds_changed", function () {
+  G.maps.event.addListenerOnce(dMap.map, "bounds_changed", function () {
     if ((this.getZoom() ?? 20) > 17) {
       this.setZoom(17);
     }
@@ -158,11 +205,23 @@ const addDynamicMapMarkers = (dMap: DynamicMap, markers: google.maps.MarkerOptio
   dMap.map.fitBounds(bounds);
 };
 
+const toLiteral = (p: google.maps.LatLng | google.maps.LatLngLiteral): google.maps.LatLngLiteral =>
+  typeof p.lat === "function" ? { lat: p.lat(), lng: (p as google.maps.LatLng).lng() } : p as google.maps.LatLngLiteral;
+
+// Initial compass bearing from one point to another; the Maps "geometry" library may not be loaded on the page.
+const bearing = (from: google.maps.LatLngLiteral, to: google.maps.LatLngLiteral) => {
+  const rad = (x: number) => x * Math.PI / 180;
+  const y = Math.sin(rad(to.lng - from.lng)) * Math.cos(rad(to.lat));
+  const x = Math.cos(rad(from.lat)) * Math.sin(rad(to.lat)) -
+    Math.sin(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.cos(rad(to.lng - from.lng));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+};
+
 const loadStreetView = async (dMap: DynamicMap, position: google.maps.LatLng | google.maps.LatLngLiteral) => {
-  const svClient = new google.maps.StreetViewService;
+  const svClient = new (uwtGoogle()!.maps.StreetViewService);
   const result = await svClient.getPanorama({ location: position, radius: 50 });
   const svLocation = result.data.location!.latLng!;
-  const heading = google.maps.geometry.spherical.computeHeading(svLocation, position);
+  const heading = bearing(toLiteral(svLocation), toLiteral(position));
   dMap.pano.setPov({ heading, pitch: 0 });
   dMap.pano.setPosition(svLocation);
   dMap.pano.setVisible(true);
@@ -215,7 +274,6 @@ const parseMarker = (marker: string): google.maps.MarkerOptions[] => {
   const markerSpec = marker.split("|");
   const style: Record<string, string> = {};
   while (markerSpec.length > 0 && markerSpec[0].includes(":")) {
-    console.log("b");
     const s = markerSpec.shift()!;
     style[s.substring(0, s.indexOf(":"))] = s.substring(s.indexOf(":") + 1);
   }
@@ -223,7 +281,7 @@ const parseMarker = (marker: string): google.maps.MarkerOptions[] => {
     .filter(spc => spc.includes(","))
     .map(spc => spc.split(",").map(coord => parseFloat(coord)))
     .map(([ lat, lng ]) => ({
-      position: new google.maps.LatLng(lat, lng),
+      position: { lat, lng },
       icon: style.icon?.replace(/^(https?:)(?!\/\/)/, "$1//"),
     }));
 };
