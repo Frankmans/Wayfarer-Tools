@@ -154,14 +154,38 @@ export default () => {
         }
       };
 
-      const handleProfile = () => {
-        void addRHButtons();
-        void renderReviewHistory();
+      // ---- redesign: the profile page (wf-credibility-card) the export/import buttons and history tables
+      // used to be added to is gone. A button at the bottom left (next to the Nomination stats button)
+      // opens the review history in a window instead. Recording reviews is unchanged (API based).
+      let openGrids: agGrid.GridApi[] = [];
+
+      const openHistoryWindow = async () => {
+        const { container, dismiss } = await toolbox.createModal("uwtrh-modal");
+        if (isDarkMode()) container.classList.add("uwt-dark");
+        const close = makeChildNode(container, "button", "\u00d7");
+        close.className = "uwtrh-x";
+        close.addEventListener("click", () => {
+          for (const api of openGrids) api.destroy();
+          openGrids = [];
+          dismiss();
+        });
+        makeChildNode(container, "h2", "Review history");
+        addRHButtons(makeChildNode(container, "div"));
+        await renderReviewHistory(container);
       };
 
-      const addRHButtons = async () => {
-        const ref = await untilTruthy(() => document.querySelector("wf-credibility-card"));
-        const outer = makeChildNode(ref.parentElement!, "div");
+      const addHistoryButton = async () => {
+        const body = await untilTruthy(() => document.body);
+        if (document.getElementById("uwtrh-button")) return;
+        const button = makeChildNode(body, "button") as HTMLButtonElement;
+        button.id = "uwtrh-button";
+        button.type = "button";
+        button.title = "Review history";
+        button.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><polyline points=\"12 7 12 12 15 14\"/></svg>";
+        button.addEventListener("click", () => { void openHistoryWindow(); });
+      };
+
+      const addRHButtons = (outer: HTMLElement) => {
         outer.classList.add("uwtrh-idb");
 
         makeChildNode(outer, "p", "Review history:");
@@ -264,7 +288,7 @@ export default () => {
         return true;
       };
 
-      const renderReviewHistory = async () => {
+      const renderReviewHistory = async (parent: HTMLElement) => {
         const rhNew: StoredNewReview[] = [];
         const rhEdits: StoredEditReview[] = [];
         const rhPhotos: StoredPhotoReview[] = [];
@@ -277,8 +301,7 @@ export default () => {
           else if (review.type === "PHOTO") rhPhotos.push(review);
         }
 
-        const ratingNarRef = await untilTruthy(() => document.querySelector("wf-credibility-card"));
-        const parent = ratingNarRef.parentNode!.parentNode!;
+        makeChildNode(parent, "p", `${reviews.length} review(s) stored locally`).classList.add("uwtrh-count");
         const searchBox = document.createElement("input");
         searchBox.classList.add("uwftcore-fix", "uwftcore-ui-large-input");
         searchBox.placeholder = "Search...";
@@ -299,6 +322,8 @@ export default () => {
         for (const table of tables) {
           parent.appendChild(table.table);
         }
+        // show the nomination reviews first
+        selector.querySelector("button")?.click();
       };
 
       const renderTableSelector = (searchBox: HTMLInputElement, tables: { label: string, table: HTMLElement}[]) => {
@@ -457,6 +482,7 @@ export default () => {
           theme: agGrid.themeQuartz.withPart(isDarkMode() ? agGrid.colorSchemeDark : agGrid.colorSchemeLight),
           pagination: true,
         });
+        openGrids.push(api);
         searchBox.addEventListener("input", () => {
           api.setGridOption("quickFilterText", searchBox.value);
         });
@@ -464,8 +490,8 @@ export default () => {
       };
 
       toolbox.interceptOpenJson("GET", "/api/v1/vault/review", handleIncomingReview);
-      toolbox.interceptOpenJson("GET", "/api/v1/vault/profile", handleProfile);
       toolbox.interceptSendJson("/api/v1/vault/review", handleSubmittedReview);
+      void addHistoryButton();
 
       return {
         async getAllReviews() {

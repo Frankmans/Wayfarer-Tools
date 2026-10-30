@@ -1,12 +1,83 @@
-.uwtrh-idb {
-  color: #333;
-  padding-top: 0.3em;
-  text-align: center;
-  display: block;
+/* redesign: button (next to the Nomination stats button) and window for the review history */
+#uwtrh-button {
+  position: fixed;
+  left: 112px;
+  bottom: 64px;
+  z-index: 99990;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  background: #111827;
+  color: #f9fafb;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  padding: 0;
+  opacity: 0.75;
 }
 
-.dark .uwtrh-idb {
-  color: #ddd;
+#uwtrh-button:hover {
+  opacity: 1;
+}
+
+.uwtrh-modal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: #fff !important;
+  color: #111827 !important;
+  font-size: 15px;
+  width: min(1100px, calc(100vw - 50px));
+  height: min(760px, calc(100vh - 50px));
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.uwtrh-modal.uwt-dark {
+  background: #1f2937 !important;
+  color: #f9fafb !important;
+}
+
+.uwtrh-modal h2 {
+  font-size: 1.4rem;
+  font-weight: bold;
+  margin-bottom: 0.6rem;
+}
+
+.uwtrh-modal .uwtrh-x {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  font-size: 26px;
+  cursor: pointer;
+  opacity: 0.6;
+  background: none;
+  border: 0;
+  color: inherit;
+}
+
+.uwtrh-modal .uwtrh-x:hover {
+  opacity: 1;
+}
+
+.uwtrh-modal .uwtrh-count {
+  margin: 0.4rem 0;
+}
+
+.uwtrh-modal .uwtrh-table {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 320px;
+}
+
+.uwtrh-idb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
 }
 
 .uwtrh-idb button {
