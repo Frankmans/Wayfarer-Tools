@@ -49,12 +49,12 @@ const assetBaseUrl = host === "github" ? \`\${baseUrl}/resources\` : \`\${baseUr
 console.log("Applying GitHub hosting changes...");
 
 await edit("src/tools/build-utils.mjs", (t, log) => {
-  t = sub(t, /getCliArg\("host", "[^"]*"\)/, 'getCliArg("host", "github")', log, "default host");
+  t = sub(t, /getCliArg\("host", "[^"]*"\)/, "getCliArg(\"host\", \"github\")", log, "default host");
   t = sub(t, /getCliArg\("branch", \(mode === "production" \? "[^"]*" : "develop"\)\)/,
     `getCliArg("branch", (mode === "production" ? "${BRANCH}" : "develop"))`, log, "default branch");
   t = sub(t, /(\* The branch on GitHub to use for various URLs\n \* @type \{)[^}]*(\})/, "$1string$2", log, "branch type");
   t = sub(t, /const repo = "[^"]*";/, `const repo = "${REPO}";`, log, "repo");
-  if (!t.includes('host === "github" ? `${baseUrl}/resources`')) {
+  if (!t.includes("host === \"github\" ? `${baseUrl}/resources`")) {
     t = sub(t, /const assetBaseUrl = `\$\{baseUrl\}\/assets`;/, () => NEW_ASSET_BASE, log, "asset base URL");
   }
   if (!t.includes("--config-${name}")) {
@@ -64,7 +64,7 @@ await edit("src/tools/build-utils.mjs", (t, log) => {
 });
 
 await edit("package.json", (t, log) => {
-  t = sub(t, /"build-prod": "npm run build-prod-[a-z]+"/, '"build-prod": "npm run build-prod-gh"', log, "build-prod script");
+  t = sub(t, /"build-prod": "npm run build-prod-[a-z]+"/, "\"build-prod\": \"npm run build-prod-gh\"", log, "build-prod script");
   t = sub(t, /("build-prod-base": "rollup -c --config-mode production --config-branch )[^"]*"/, `$1${BRANCH}"`, log, "build-prod branch");
   t = sub(t, /("repository": \{[^}]*"url": ")[^"]*"/, `$1git+https://github.com/${REPO}.git"`, log, "repository url");
   t = sub(t, /("bugs": \{[^}]*"url": ")[^"]*"/, `$1https://github.com/${REPO}/issues"`, log, "bugs url");

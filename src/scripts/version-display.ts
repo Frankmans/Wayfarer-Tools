@@ -17,7 +17,7 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 import { CheckboxEditor, register, SelectBoxEditor } from "../core";
-import { untilTruthy, makeChildNode } from "../utils";
+import { untilTruthy, makeChildNode, uwtPageWin, uwtPageXHR } from "../utils";
 import { ApiResult } from "../types";
 
 import "./version-display.css";
@@ -79,12 +79,11 @@ export default () => {
         let box = document.getElementById("uwtvd-display");
         let span;
         if (box === null) {
-          const container = await untilTruthy(() => document.querySelector("wf-logo"));
-          if (!container.classList.contains("uwtvd-touched")) container.classList.add("uwtvd-touched");
-          box = makeChildNode(container, "div");
+          // redesign: wf-logo no longer exists; the version is a small label fixed to the bottom left
+          const body = await untilTruthy(() => document.body);
+          box = makeChildNode(body, "div");
           box.id = "uwtvd-display";
           span = makeChildNode(box, "span");
-          container.parentElement!.style.width = "150px";
         } else {
           span = box.querySelector("span")!;
         }
@@ -134,13 +133,32 @@ export default () => {
         }
       };
 
+      // the page's own XHR and fetch (not the userscript sandbox's copies) carry Wayfarer's API traffic
       (function (open) {
-        XMLHttpRequest.prototype.open = function (_m, _u) {
+        uwtPageXHR.prototype.open = function (_m, _u) {
           this.addEventListener("load", parseResponse, false);
           const args: any = arguments;
           open.apply(this, args);
         };
-      })(XMLHttpRequest.prototype.open);
+      })(uwtPageXHR.prototype.open);
+
+      const originalFetch = uwtPageWin.fetch;
+      if (typeof originalFetch === "function") {
+        uwtPageWin.fetch = async function (this: unknown, input: RequestInfo | URL) {
+          const response: Response = await originalFetch.apply(this, arguments as unknown as [RequestInfo | URL, RequestInit?]);
+          try {
+            const url = input instanceof Request ? input.url : String(input);
+            if (/\/api\/v1\//.test(url)) {
+              void response.clone().json().then((json: ApiResult<any>) => {
+                if (json && json.version) void setVersion(json.version);
+              }).catch(() => { /* not JSON */ });
+            }
+          } catch {
+            // Pass
+          }
+          return response;
+        };
+      }
     },
   });
 };

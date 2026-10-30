@@ -30,20 +30,61 @@ export default () => {
     description: "Add extended Wayfarer Profile stats",
     defaultConfig: {},
     sessionData: {},
-    initialize: (toolbox, _logger, _config) => {
-      toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", parseContributions);
+    initialize: (toolbox, logger, _config) => {
+      // ---- redesign: the Nominations page (app-submissions-list) and the header (wf-logo) the stats
+      // panel and export buttons used to hook into are gone. A button at the bottom left (next to the
+      // Nomination map button) now opens a window with the stats and the export buttons.
+      let nominations: AnyContribution[] | null = null;
+
+      const openStatsWindow = async () => {
+        const { container, dismiss } = await toolbox.createModal("uwtns-modal");
+        if (document.documentElement.classList.contains("dark") || document.body.classList.contains("dark")) {
+          container.classList.add("uwt-dark");
+        }
+        const close = makeChildNode(container, "button", "\u00d7");
+        close.className = "uwtns-x";
+        close.addEventListener("click", dismiss);
+        makeChildNode(container, "h2", "Nomination stats");
+        const body = makeChildNode(container, "div");
+
+        if (nominations === null) {
+          makeChildNode(body, "p", "Loading nominations...");
+          try {
+            const data = await toolbox.makeRequest("GET", "/api/v1/vault/manage");
+            if (data && data.submissions) nominations = data.submissions;
+          } catch (e) {
+            logger.error(e);
+          }
+          body.innerHTML = "";
+        }
+        if (nominations === null) {
+          makeChildNode(body, "p", "Could not load your nominations.");
+          return;
+        }
+        body.innerHTML = buildStatsHtml(nominations);
+        addExportButtons(makeChildNode(container, "div"), nominations);
+      };
+
+      const addButton = async () => {
+        const body = await untilTruthy(() => document.body);
+        if (document.getElementById("uwtns-button")) return;
+        const button = makeChildNode(body, "button") as HTMLButtonElement;
+        button.id = "uwtns-button";
+        button.type = "button";
+        button.title = "Nomination stats";
+        button.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"6\" y1=\"20\" x2=\"6\" y2=\"11\"/><line x1=\"12\" y1=\"20\" x2=\"12\" y2=\"4\"/><line x1=\"18\" y1=\"20\" x2=\"18\" y2=\"14\"/></svg>";
+        button.addEventListener("click", () => { void openStatsWindow(); });
+      };
+      void addButton();
+
+      toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", (data: SubmissionsResult) => {
+        if (data && data.submissions) nominations = data.submissions;
+      });
     },
   });
 };
 
-const parseContributions = (data: SubmissionsResult) => {
-  if (!data.submissions) return;
-  void addNominationDetails(data.submissions);
-  void addExportButtons(data.submissions);
-};
-
-const addNominationDetails = async (subs: AnyContribution[]) => {
-  const ref = await untilTruthy(() => document.querySelector("app-submissions-list"));
+const buildStatsHtml = (subs: AnyContribution[]): string => {
   const counts = <Record<string, Record<string, number>>>{
     "EDIT": {},
     "TOTAL": {},
@@ -143,36 +184,10 @@ const addNominationDetails = async (subs: AnyContribution[]) => {
   }
   html += "</table>";
 
-  const statsContainer = document.createElement("div");
-  statsContainer.setAttribute("class", "uwftns-wrap-collabsible");
-  statsContainer.id = "nomStats";
-
-  const collapsibleInput = document.createElement("input");
-  collapsibleInput.id = "uwftns-collapsed-stats";
-  collapsibleInput.setAttribute("class", "uwftns-toggle");
-  collapsibleInput.type = "checkbox";
-
-  const collapsibleLabel = document.createElement("label");
-  collapsibleLabel.setAttribute("class", "uwftns-lbl-toggle-ns");
-  collapsibleLabel.innerText = "View Nomination Stats";
-  collapsibleLabel.setAttribute("for", "uwftns-collapsed-stats");
-
-  const collapsibleContent = document.createElement("div");
-  collapsibleContent.setAttribute("class", "uwftns-collapsible-content");
-  collapsibleContent.innerHTML = html;
-
-  statsContainer.appendChild(collapsibleInput);
-  statsContainer.appendChild(collapsibleLabel);
-  statsContainer.appendChild(collapsibleContent);
-
-  const container = ref.parentNode!;
-  container.appendChild(statsContainer);
+  return html;
 };
 
-const addExportButtons = async (subs: AnyContribution[]) => {
-  const ref = await untilTruthy(() => document.querySelector("wf-logo"));
-  if (document.getElementById("uwftns-export") !== null) return;
-  const div = makeChildNode(ref.parentElement!.parentElement!, "div");
+const addExportButtons = (div: HTMLElement, subs: AnyContribution[]) => {
   div.id = "uwftns-export";
   const exportButton = makeChildNode(div, "button", "Export JSON");
   exportButton.addEventListener("click", () => exportNominationsJson(subs));

@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name              Unified Wayfarer Tools
 // @namespace         https://github.com/Frankmans/Wayfarer-Tools
-// @version           
+// @version           1.0.11r.g6597bab
 // @description       Unofficial addons that add extra quality of life features to Scopely's project Wayfarer.
 // @homepageURL       https://github.com/Frankmans/Wayfarer-Tools#readme
 // @supportURL        https://github.com/Frankmans/Wayfarer-Tools/issues
 // @license           GPL-3.0-only
 // @author            bilde2910
 // @copyright         bilde2910 (https://github.com/bilde2910)
-// @icon              https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/images/logo_48.png?b=e1592e1
+// @icon              https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/images/logo_48.png?b=6597bab
 // @match             https://wayfarer.scopely.com/*
 // @downloadURL       https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/dist/unified-wayfarer-tools.user.js
 // @updateURL         https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/dist/unified-wayfarer-tools.meta.js
@@ -16,7 +16,7 @@
 // @grant             GM.xmlHttpRequest
 // @grant             GM.openInTab
 // @noframes
-// @resource          geofences https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/geofences.json?b=e1592e1
+// @resource          geofences https://raw.githubusercontent.com/Frankmans/Wayfarer-Tools/redesign-port/resources/geofences.json?b=6597bab
 // @require           https://cdn.jsdelivr.net/npm/@googlemaps/markerclusterer@2.6.2/dist/index.min.js
 // @require           https://cdn.jsdelivr.net/npm/proj4@2.20.0/dist/proj4.js
 // @require           https://cdn.jsdelivr.net/npm/ag-grid-community@34.3.1/dist/ag-grid-community.min.js
@@ -177,15 +177,6 @@ function untilTruthy(listener) {
         };
         queryLoop();
     });
-}
-function debounce(callback, wait) {
-    let timeout;
-    return (...args) => {
-        clearTimeout(timeout);
-        timeout = setTimeout(function () {
-            callback.apply(this, args);
-        }, wait);
-    };
 }
 const makeChildNode = (parent, tagName, content) => {
     const e = document.createElement(tagName);
@@ -3974,20 +3965,61 @@ var nominationStats = () => {
         description: "Add extended Wayfarer Profile stats",
         defaultConfig: {},
         sessionData: {},
-        initialize: (toolbox, _logger, _config) => {
-            toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", parseContributions);
+        initialize: (toolbox, logger, _config) => {
+            // ---- redesign: the Nominations page (app-submissions-list) and the header (wf-logo) the stats
+            // panel and export buttons used to hook into are gone. A button at the bottom left (next to the
+            // Nomination map button) now opens a window with the stats and the export buttons.
+            let nominations = null;
+            const openStatsWindow = async () => {
+                const { container, dismiss } = await toolbox.createModal("uwtns-modal");
+                if (document.documentElement.classList.contains("dark") || document.body.classList.contains("dark")) {
+                    container.classList.add("uwt-dark");
+                }
+                const close = makeChildNode(container, "button", "\u00d7");
+                close.className = "uwtns-x";
+                close.addEventListener("click", dismiss);
+                makeChildNode(container, "h2", "Nomination stats");
+                const body = makeChildNode(container, "div");
+                if (nominations === null) {
+                    makeChildNode(body, "p", "Loading nominations...");
+                    try {
+                        const data = await toolbox.makeRequest("GET", "/api/v1/vault/manage");
+                        if (data && data.submissions)
+                            nominations = data.submissions;
+                    }
+                    catch (e) {
+                        logger.error(e);
+                    }
+                    body.innerHTML = "";
+                }
+                if (nominations === null) {
+                    makeChildNode(body, "p", "Could not load your nominations.");
+                    return;
+                }
+                body.innerHTML = buildStatsHtml(nominations);
+                addExportButtons(makeChildNode(container, "div"), nominations);
+            };
+            const addButton = async () => {
+                const body = await untilTruthy(() => document.body);
+                if (document.getElementById("uwtns-button"))
+                    return;
+                const button = makeChildNode(body, "button");
+                button.id = "uwtns-button";
+                button.type = "button";
+                button.title = "Nomination stats";
+                button.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"6\" y1=\"20\" x2=\"6\" y2=\"11\"/><line x1=\"12\" y1=\"20\" x2=\"12\" y2=\"4\"/><line x1=\"18\" y1=\"20\" x2=\"18\" y2=\"14\"/></svg>";
+                button.addEventListener("click", () => { void openStatsWindow(); });
+            };
+            void addButton();
+            toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", (data) => {
+                if (data && data.submissions)
+                    nominations = data.submissions;
+            });
         },
     });
 };
-const parseContributions = (data) => {
-    if (!data.submissions)
-        return;
-    void addNominationDetails(data.submissions);
-    void addExportButtons(data.submissions);
-};
-const addNominationDetails = async (subs) => {
+const buildStatsHtml = (subs) => {
     var _a, _b;
-    const ref = await untilTruthy(() => document.querySelector("app-submissions-list"));
     const counts = {
         "EDIT": {},
         "TOTAL": {},
@@ -4079,31 +4111,9 @@ const addNominationDetails = async (subs) => {
         html += "</tr>";
     }
     html += "</table>";
-    const statsContainer = document.createElement("div");
-    statsContainer.setAttribute("class", "uwftns-wrap-collabsible");
-    statsContainer.id = "nomStats";
-    const collapsibleInput = document.createElement("input");
-    collapsibleInput.id = "uwftns-collapsed-stats";
-    collapsibleInput.setAttribute("class", "uwftns-toggle");
-    collapsibleInput.type = "checkbox";
-    const collapsibleLabel = document.createElement("label");
-    collapsibleLabel.setAttribute("class", "uwftns-lbl-toggle-ns");
-    collapsibleLabel.innerText = "View Nomination Stats";
-    collapsibleLabel.setAttribute("for", "uwftns-collapsed-stats");
-    const collapsibleContent = document.createElement("div");
-    collapsibleContent.setAttribute("class", "uwftns-collapsible-content");
-    collapsibleContent.innerHTML = html;
-    statsContainer.appendChild(collapsibleInput);
-    statsContainer.appendChild(collapsibleLabel);
-    statsContainer.appendChild(collapsibleContent);
-    const container = ref.parentNode;
-    container.appendChild(statsContainer);
+    return html;
 };
-const addExportButtons = async (subs) => {
-    const ref = await untilTruthy(() => document.querySelector("wf-logo"));
-    if (document.getElementById("uwftns-export") !== null)
-        return;
-    const div = makeChildNode(ref.parentElement.parentElement, "div");
+const addExportButtons = (div, subs) => {
     div.id = "uwftns-export";
     const exportButton = makeChildNode(div, "button", "Export JSON");
     exportButton.addEventListener("click", () => exportNominationsJson(subs));
@@ -4233,179 +4243,250 @@ var nominationMap = () => {
         },
         sessionData: {},
         initialize: (toolbox, logger, config) => {
-            config.setUserEditable("loadFirst", {
-                label: "Load first wayspot detail automatically",
-                editor: new CheckboxEditor(),
-            });
             config.setUserEditable("maxClusteringZoom", {
                 label: "Max zoom level for marker clustering",
                 help: "Value from 0-20, where higher numbers equal closer zoom. When the map is zoomed in beyond this level, markers will no longer cluster together.",
                 editor: new NumericInputEditor({ min: 0, max: 20 }),
             });
-            let countText = null;
+            // ---- redesign: the Nominations page markup (list, search box, sort dialog) is gone, so the map no
+            // longer hooks into it. A button at the bottom left (above the settings gear) opens the map of all
+            // nominations in a window, on any Wayfarer page. Data comes from the /manage request.
+            let nominations = null;
+            let nominationMap = null;
             let nominationCluster = null;
             let nominationMarkers = [];
-            let nominationMap = null;
-            let nominations = null;
+            let infoWindow = null;
+            const hiddenStatuses = new Set();
+            let redraw = null;
             const parseContributions = (data) => {
-                if (!data.submissions)
+                if (!data || !data.submissions)
                     return;
                 nominations = data.submissions;
-                void addCounter();
-                void initPrimaryListener();
-                void initNominationMap();
-                void checkAutoLoad();
+                updateButtonLabel();
+                if (redraw)
+                    void redraw(true);
             };
-            const clickFirst = async () => {
-                const ref = await untilTruthy(() => document.querySelector(".cdk-virtual-scroll-content-wrapper"));
-                ref.children[0].click();
+            const STATUS_COLORS = {
+                [ContributionStatus.ACCEPTED]: "green",
+                [ContributionStatus.APPEALED]: "purple",
+                [ContributionStatus.NOMINATED]: "blue",
+                [ContributionStatus.WITHDRAWN]: "grey",
+                [ContributionStatus.VOTING]: "yellow",
+                [ContributionStatus.DUPLICATE]: "orange",
+                [ContributionStatus.REJECTED]: "red",
             };
-            const addCounter = async () => {
-                const listEl = await untilTruthy(() => document.querySelector(".cdk-virtual-scroll-content-wrapper"));
-                const insDiv = await untilTruthy(() => document.querySelector(".mt-2"));
-                const searchInput = document.querySelector("input.w-full");
-                if (searchInput !== undefined) {
-                    searchInput === null || searchInput === void 0 ? void 0 : searchInput.addEventListener("keyup", debounce(() => updateMapFilter(), 1000));
+            const getIconUrl = (nomination) => `https://maps.google.com/mapfiles/ms/icons/${STATUS_COLORS[nomination.status] || "blue"}.png`;
+            const prettyStatus = (st) => String(st || "UNKNOWN").toLowerCase().replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+            let button = null;
+            const updateButtonLabel = () => {
+                if (button)
+                    button.title = nominations ? `Nomination map (${nominations.length} nominations)` : "Nomination map";
+            };
+            const ensureStyle = () => {
+                if (document.getElementById("uwtnm-style2"))
+                    return;
+                const st = document.createElement("style");
+                st.id = "uwtnm-style2";
+                st.textContent = `
+
+        #uwtnm-button{position:fixed;left:16px;bottom:64px;z-index:99990;width:40px;height:40px;border-radius:50%;
+        border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;
+        align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}
+        #uwtnm-button:hover{opacity:1}
+        .uwtnm-modal{background:#fff !important;color:#111827 !important;max-width:none !important;max-height:none !important;
+        width:calc(100vw - 50px);height:calc(100vh - 50px);overflow:hidden !important;display:flex;flex-direction:column;box-sizing:border-box}
+        .uwtnm-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}
+        .uwtnm-head{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+        .uwtnm-head h2{font-size:1.3rem;font-weight:bold;margin:0}
+        .uwtnm-head .uwtnm-count{opacity:.7}
+        .uwtnm-head button.uwtnm-x{margin-left:auto;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}
+        .uwtnm-head button.uwtnm-x:hover{opacity:1}
+        .uwtnm-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+        .uwtnm-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(128,128,128,.55);border-radius:999px;
+        padding:2px 10px;font-size:13px;cursor:pointer;background:transparent;color:inherit}
+        .uwtnm-chip.uwtnm-off{opacity:.4;text-decoration:line-through}
+        .uwtnm-chip img{width:12px;height:20px;object-fit:contain}
+        .uwtnm-mapbox{flex:1 1 auto;min-height:200px;border-radius:8px;overflow:hidden;background:#ddd}
+        .uwtnm-mapbox .uwtnm-msg{padding:16px}
+        .uwtnm-iw{max-width:220px;color:#111}
+        .uwtnm-iw img{max-width:100%;border-radius:6px;margin:6px 0}
+        .uwtnm-iw button{margin-top:4px;padding:2px 8px;border:1px solid #9ca3af;border-radius:4px;background:#f3f4f6;cursor:pointer}`;
+                document.head.appendChild(st);
+            };
+            const openMapWindow = async () => {
+                ensureStyle();
+                const { container, dismiss } = await toolbox.createModal("uwtnm-modal");
+                if (document.documentElement.classList.contains("dark") || document.body.classList.contains("dark")) {
+                    container.classList.add("uwt-dark");
                 }
-                setTimeout(() => {
-                    const count = listEl.__ngContext__[3][26].length;
-                    countText = document.createElement("div");
-                    countText.textContent = `Count: ${count}`;
-                    countText.classList.add("uwtnm-text");
-                    insDiv.insertBefore(countText, insDiv.children[0]);
-                }, 1000);
-            };
-            const initPrimaryListener = async () => {
-                const ref = await untilTruthy(() => document.querySelector(".cursor-pointer"));
-                ref.addEventListener("click", function () {
-                    const modal = document.getElementsByTagName("app-submissions-sort-modal");
-                    const els = modal[0].getElementsByClassName("wf-button--primary");
-                    for (let i = 0; i < els.length; i++) {
-                        els[i].addEventListener("click", function () {
-                            setTimeout(updateMapFilter, 250);
+                const head = makeChildNode(container, "div");
+                head.className = "uwtnm-head";
+                makeChildNode(head, "h2", "Nomination map");
+                const countEl = makeChildNode(head, "span");
+                countEl.className = "uwtnm-count";
+                const reload = makeChildNode(head, "button", "Reload");
+                reload.className = "uwtnm-chip";
+                const close = makeChildNode(head, "button", "\u00d7");
+                close.className = "uwtnm-x";
+                const chips = makeChildNode(container, "div");
+                chips.className = "uwtnm-chips";
+                const mapBox = makeChildNode(container, "div");
+                mapBox.className = "uwtnm-mapbox";
+                const message = (text) => {
+                    mapBox.innerHTML = "";
+                    makeChildNode(mapBox, "p", text).className = "uwtnm-msg";
+                };
+                const closeAll = () => {
+                    redraw = null;
+                    nominationMap = null;
+                    nominationCluster = null;
+                    nominationMarkers = [];
+                    infoWindow = null;
+                    dismiss();
+                };
+                close.addEventListener("click", closeAll);
+                const load = async () => {
+                    message("Loading nominations...");
+                    try {
+                        const data = await toolbox.makeRequest("GET", "/api/v1/vault/manage");
+                        if (data && data.submissions)
+                            nominations = data.submissions;
+                    }
+                    catch (e) {
+                        logger.error(e);
+                        if (!nominations) {
+                            message("Could not load your nominations.");
+                            return false;
+                        }
+                    }
+                    updateButtonLabel();
+                    return true;
+                };
+                const buildChips = () => {
+                    chips.innerHTML = "";
+                    const counts = {};
+                    for (const n of nominations)
+                        counts[n.status] = (counts[n.status] || 0) + 1;
+                    for (const [status, count] of Object.entries(counts).sort((x, y) => y[1] - x[1])) {
+                        const chip = makeChildNode(chips, "button");
+                        chip.type = "button";
+                        chip.className = "uwtnm-chip" + (hiddenStatuses.has(status) ? " uwtnm-off" : "");
+                        const icon = document.createElement("img");
+                        icon.src = getIconUrl({ status });
+                        chip.appendChild(icon);
+                        chip.appendChild(document.createTextNode(`${prettyStatus(status)} (${count})`));
+                        chip.addEventListener("click", () => {
+                            if (hiddenStatuses.has(status))
+                                hiddenStatuses.delete(status);
+                            else
+                                hiddenStatuses.add(status);
+                            chip.classList.toggle("uwtnm-off");
+                            void draw(true);
                         });
                     }
-                });
-            };
-            const checkAutoLoad = async () => {
-                if (config.get("loadFirst")) {
-                    await clickFirst();
-                }
-            };
-            const initNominationMap = async () => {
-                await untilTruthy(() => typeof google !== "undefined" && nominations.length > 0);
-                if (nominationMap === null) {
-                    await addMap(createElements());
-                }
-                else {
-                    await updateMap(true);
-                }
-            };
-            const addMap = async (mapElement) => {
-                const mapSettings = {
-                    scrollwheel: true,
-                    gestureHandling: "greedy",
-                } ;
-                nominationMap = new google.maps.Map(mapElement, {
-                    zoom: 8,
-                    ...mapSettings,
-                });
-                await updateMap(true);
-            };
-            const createElements = () => {
-                const container = document.createElement("div");
-                container.classList.add("uwtnm-wrap-collapsible");
-                const collapsibleInput = document.createElement("input");
-                collapsibleInput.id = "uwtnm-collapsed-map";
-                collapsibleInput.classList.add("uwtnm-toggle");
-                collapsibleInput.type = "checkbox";
-                const collapsibleLabel = document.createElement("label");
-                collapsibleLabel.classList.add("uwtnm-lbl-toggle");
-                collapsibleLabel.textContent = "View Nomination Map";
-                collapsibleLabel.setAttribute("for", "uwtnm-collapsed-map");
-                const collapsibleContent = document.createElement("div");
-                collapsibleContent.classList.add("uwtnm-collapsible-content");
-                const mapElement = document.createElement("div");
-                mapElement.classList.add("uwtnm-map");
-                mapElement.textContent = "Loading...";
-                collapsibleContent.appendChild(mapElement);
-                container.appendChild(collapsibleInput);
-                container.appendChild(collapsibleLabel);
-                container.appendChild(collapsibleContent);
-                const sectionElement = document.getElementsByTagName("app-submissions")[0];
-                sectionElement.insertBefore(container, sectionElement.children[0]);
-                return mapElement;
-            };
-            const updateMapFilter = async () => {
-                if (countText) {
-                    const listEl = document.querySelector(".cdk-virtual-scroll-content-wrapper");
-                    const count = listEl.__ngContext__[3][26].length;
-                    nominations = listEl.__ngContext__[3][26];
-                    countText.textContent = `Count: ${count}`;
-                    await updateMap(true);
-                }
-                window.dispatchEvent(new Event("uwtNM_MapFilterChange"));
-            };
-            const updateMap = async (reset) => {
-                if (nominationMap === null)
-                    return;
-                if (nominationCluster !== null) {
-                    nominationCluster.clearMarkers();
-                }
-                const bounds = new google.maps.LatLngBounds();
-                nominationMarkers = nominations.map(n => {
-                    const ll = {
-                        lat: n.lat,
-                        lng: n.lng,
-                    };
-                    const marker = new google.maps.Marker({
-                        map: nominationMap,
-                        position: ll,
-                        title: n.title,
-                        icon: {
-                            url: getIconUrl(n),
-                        },
-                    });
-                    marker.addListener("click", () => {
-                        const inputs = document.querySelectorAll("input[type=text]");
-                        const input = inputs[0];
-                        input.value = n.id;
-                        input.dispatchEvent(new Event("input"));
-                        setTimeout(clickFirst, 500);
-                        setTimeout(async () => {
-                            logger.info("Calling updateMap with false");
-                            await updateMap(false);
-                        }, 500);
-                    });
-                    bounds.extend(ll);
-                    return marker;
-                });
-                nominationCluster = new markerclusterer.MarkerClusterer({
-                    map: nominationMap,
-                    markers: nominationMarkers,
-                    renderer: new NominationMapClusterRenderer(),
-                    algorithmOptions: {
-                        maxZoom: config.get("maxClusteringZoom"),
-                    },
-                });
-                if (reset) {
-                    logger.info("Resetting bounds");
-                    nominationMap.fitBounds(bounds);
-                }
-                await addS2Overlay(nominationMap, GRIDS);
-            };
-            const getIconUrl = (nomination) => {
-                const colorMap = {
-                    [ContributionStatus.ACCEPTED]: "green",
-                    [ContributionStatus.APPEALED]: "purple",
-                    [ContributionStatus.NOMINATED]: "blue",
-                    [ContributionStatus.WITHDRAWN]: "grey",
-                    [ContributionStatus.VOTING]: "yellow",
-                    [ContributionStatus.DUPLICATE]: "orange",
-                    [ContributionStatus.REJECTED]: "red",
                 };
-                return `https://maps.google.com/mapfiles/ms/icons/${colorMap[nomination.status] || "blue"}.png`;
+                const draw = async (reset) => {
+                    if (!nominations || nominationMap === null)
+                        return;
+                    const map = nominationMap;
+                    const G = uwtGoogle();
+                    if (nominationCluster !== null)
+                        nominationCluster.clearMarkers();
+                    for (const m of nominationMarkers)
+                        m.setMap(null);
+                    const shown = nominations.filter(n => !hiddenStatuses.has(n.status) && Number.isFinite(n.lat) && Number.isFinite(n.lng));
+                    countEl.textContent = `${shown.length} of ${nominations.length} shown`;
+                    const bounds = new G.maps.LatLngBounds();
+                    nominationMarkers = shown.map(n => {
+                        const ll = { lat: n.lat, lng: n.lng };
+                        const marker = new G.maps.Marker({
+                            map,
+                            position: ll,
+                            title: n.title,
+                            icon: { url: getIconUrl(n) },
+                        });
+                        marker.addListener("click", () => {
+                            if (!infoWindow)
+                                infoWindow = new G.maps.InfoWindow();
+                            const box = document.createElement("div");
+                            box.className = "uwtnm-iw";
+                            const t = document.createElement("strong");
+                            t.textContent = n.title || "(untitled)";
+                            box.appendChild(t);
+                            box.appendChild(document.createElement("br"));
+                            box.appendChild(document.createTextNode(prettyStatus(n.status)));
+                            if (typeof n.imageUrl === "string" && /^https:\/\//.test(n.imageUrl)) {
+                                box.appendChild(document.createElement("br"));
+                                const img = document.createElement("img");
+                                img.src = n.imageUrl;
+                                box.appendChild(img);
+                            }
+                            if (n.id) {
+                                box.appendChild(document.createElement("br"));
+                                const copy = document.createElement("button");
+                                copy.textContent = "Copy ID";
+                                copy.addEventListener("click", () => { void navigator.clipboard.writeText(String(n.id)); copy.textContent = "Copied"; });
+                                box.appendChild(copy);
+                            }
+                            infoWindow.setContent(box);
+                            infoWindow.open({ map, anchor: marker });
+                        });
+                        bounds.extend(ll);
+                        return marker;
+                    });
+                    nominationCluster = new markerclusterer.MarkerClusterer({
+                        map,
+                        markers: nominationMarkers,
+                        renderer: new NominationMapClusterRenderer(),
+                        algorithmOptions: { maxZoom: config.get("maxClusteringZoom") },
+                    });
+                    if (reset && nominationMarkers.length)
+                        map.fitBounds(bounds);
+                };
+                const build = async () => {
+                    for (let i = 0; i < 40 && !(uwtPageWin.google && uwtPageWin.google.maps); i++)
+                        await new Promise(r => setTimeout(r, 250));
+                    if (!(uwtPageWin.google && uwtPageWin.google.maps)) {
+                        message("Google Maps is not loaded on this page. Open a Wayfarer page that shows a map (for example a review), then try again.");
+                        return;
+                    }
+                    mapBox.innerHTML = "";
+                    const G = uwtGoogle();
+                    nominationMap = new G.maps.Map(mapBox, {
+                        zoom: 8,
+                        center: { lat: 0, lng: 0 },
+                        scrollwheel: true,
+                        gestureHandling: "greedy",
+                    });
+                    redraw = draw;
+                    buildChips();
+                    await draw(true);
+                    await addS2Overlay(nominationMap, GRIDS);
+                };
+                reload.addEventListener("click", async () => {
+                    if (await load()) {
+                        buildChips();
+                        await draw(true);
+                    }
+                });
+                if (nominations === null && !(await load()))
+                    return;
+                await build();
             };
+            const addButton = async () => {
+                await untilTruthy(() => document.body);
+                if (document.getElementById("uwtnm-button"))
+                    return;
+                ensureStyle();
+                button = document.createElement("button");
+                button.id = "uwtnm-button";
+                button.type = "button";
+                button.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z\"></path><circle cx=\"12\" cy=\"10\" r=\"2.5\"></circle></svg>";
+                button.addEventListener("click", () => { void openMapWindow(); });
+                document.body.appendChild(button);
+                updateButtonLabel();
+            };
+            void addButton();
             toolbox.interceptOpenJson("GET", "/api/v1/vault/manage", parseContributions);
         },
     });
@@ -4446,17 +4527,17 @@ class NominationMapClusterRenderer {
 </svg>`;
         const title = `Cluster of ${cluster.count} contributions`;
         // Adjust zIndex to be above other markers
-        const zIndex = Number(google.maps.Marker.MAX_ZINDEX) + cluster.count;
+        const zIndex = Number(uwtGoogle().maps.Marker.MAX_ZINDEX) + cluster.count;
         const clusterOptions = {
             position: cluster.position,
             zIndex,
             title,
             icon: {
                 url: `data:image/svg+xml;base64,${btoa(svg)}`,
-                anchor: new google.maps.Point(25, 25),
+                anchor: new (uwtGoogle().maps.Point)(25, 25),
             },
         };
-        return new google.maps.Marker(clusterOptions);
+        return new (uwtGoogle().maps.Marker)(clusterOptions);
     }
 }// Copyright 2025 tehstone, bilde2910
 // This file is part of the Unified Wayfarer Tools collection.
@@ -9589,10 +9670,13 @@ var reviewCounter = () => {
         },
         initialize: (toolbox, _logger, _config) => {
             const injectCounter = async () => {
-                const container = await untilTruthy(() => { var _a, _b; return (_b = (_a = document.querySelector("wf-logo")) === null || _a === void 0 ? void 0 : _a.parentElement) === null || _b === void 0 ? void 0 : _b.parentElement; });
+                // redesign: wf-logo (and the header it sat in) no longer exists; the counter is a small badge fixed
+                // to the bottom left, above the Nomination map and settings buttons (see review-counter.css)
+                const container = await untilTruthy(() => document.body);
                 if (document.getElementById("uwtrct-counter") === null) {
                     const div = makeChildNode(container, "div");
                     div.classList.add("uwtrct-outer");
+                    div.title = "Click to reset the review count";
                     const countLabel = makeChildNode(div, "p", "Review count:");
                     const counter = makeChildNode(div, "p", toolbox.session.get("reviews").toString());
                     counter.id = "uwtrct-counter";
@@ -9926,6 +10010,34 @@ var gmailGasImporter = () => {
     });
 };// Copyright 2025 tehstone, bilde2910
 // This file is part of the Unified Wayfarer Tools collection.
+// This script is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+// This script is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// You can find a copy of the GNU General Public License in the root
+// directory of this script's GitHub repository:
+// <https://github.com/bilde2910/Wayfarer-Tools/blob/main/LICENSE>
+// If not, see <https://www.gnu.org/licenses/>.
+/**
+ * redesign: the header the status badges used to sit in (next to wf-logo) no longer exists. Badges
+ * (skip count, appeal timer) are put in this shared stack, fixed to the bottom left above the review
+ * counter. Style it with the .uwt-pill class (see scripts/uwt-core.css).
+ */
+const uwtStatusStack = async () => {
+    const body = await untilTruthy(() => document.body);
+    let stack = document.getElementById("uwt-status-stack");
+    if (stack === null) {
+        stack = document.createElement("div");
+        stack.id = "uwt-status-stack";
+        body.appendChild(stack);
+    }
+    return stack;
+};// Copyright 2025 tehstone, bilde2910
+// This file is part of the Unified Wayfarer Tools collection.
 const MAX_APPEALS = 2;
 const APPEAL_COUNTDOWN_MSEC = 15 * 86400 * 1000;
 const AVAILABLE_LABEL = "Appeals available:";
@@ -9940,13 +10052,13 @@ var appealTimer = () => {
         sessionData: {},
         initialize: (toolbox, logger, _config) => {
             const updateTimer = async (result) => {
-                const container = await untilTruthy(() => { var _a, _b; return (_b = (_a = document.querySelector("wf-logo")) === null || _a === void 0 ? void 0 : _a.parentElement) === null || _b === void 0 ? void 0 : _b.parentElement; });
+                const container = await uwtStatusStack();
                 const now = Date.now();
                 let counter = document.getElementById("uwftat-counter");
                 let label = document.getElementById("uwftat-label");
                 if (counter === null) {
                     const div = makeChildNode(container, "div");
-                    div.classList.add("uwftat-outer");
+                    div.classList.add("uwftat-outer", "uwt-pill");
                     label = makeChildNode(div, "p", (result === null || result === void 0 ? void 0 : result.canAppeal) ? AVAILABLE_LABEL : UNAVAILABLE_LABEL);
                     label.id = "uwftat-label";
                     counter = makeChildNode(div, "p", "Loading…");
@@ -9961,7 +10073,7 @@ var appealTimer = () => {
                             .filter(a => a.ts >= now - APPEAL_COUNTDOWN_MSEC)
                             .sort((a, b) => a.ts - b.ts);
                         if (recent.length >= MAX_APPEALS || !(result === null || result === void 0 ? void 0 : result.canAppeal)) {
-                            const ttl = ((recent[0].ts + APPEAL_COUNTDOWN_MSEC) - now) / 1000;
+                            const ttl = recent.length ? ((recent[0].ts + APPEAL_COUNTDOWN_MSEC) - now) / 1000 : NaN;
                             if (ttl / 86400 >= 1) {
                                 counter.textContent = `~${Math.round(ttl / 86400)} days`;
                             }
@@ -11909,13 +12021,13 @@ var skipCount = () => {
         },
         initialize: (toolbox, logger, _config) => {
             const updateCounter = async () => {
-                const container = await untilTruthy(() => { var _a, _b; return (_b = (_a = document.querySelector("wf-logo")) === null || _a === void 0 ? void 0 : _a.parentElement) === null || _b === void 0 ? void 0 : _b.parentElement; });
+                const container = await uwtStatusStack();
                 const now = Date.now();
                 let counter = document.getElementById("uwftsc-counter");
                 let label = document.getElementById("uwftsc-label");
                 if (counter === null) {
                     const div = makeChildNode(container, "div");
-                    div.classList.add("uwftsc-outer");
+                    div.classList.add("uwftsc-outer", "uwt-pill");
                     label = makeChildNode(div, "p", "Skip Count:");
                     label.id = "uwftsc-label";
                     counter = makeChildNode(div, "p", "Loading…");
@@ -12060,13 +12172,11 @@ var versionDisplay = () => {
                 let box = document.getElementById("uwtvd-display");
                 let span;
                 if (box === null) {
-                    const container = await untilTruthy(() => document.querySelector("wf-logo"));
-                    if (!container.classList.contains("uwtvd-touched"))
-                        container.classList.add("uwtvd-touched");
-                    box = makeChildNode(container, "div");
+                    // redesign: wf-logo no longer exists; the version is a small label fixed to the bottom left
+                    const body = await untilTruthy(() => document.body);
+                    box = makeChildNode(body, "div");
                     box.id = "uwtvd-display";
                     span = makeChildNode(box, "span");
-                    container.parentElement.style.width = "150px";
                 }
                 else {
                     span = box.querySelector("span");
@@ -12119,13 +12229,33 @@ var versionDisplay = () => {
                     }
                 }
             };
+            // the page's own XHR and fetch (not the userscript sandbox's copies) carry Wayfarer's API traffic
             (function (open) {
-                XMLHttpRequest.prototype.open = function (_m, _u) {
+                uwtPageXHR.prototype.open = function (_m, _u) {
                     this.addEventListener("load", parseResponse, false);
                     const args = arguments;
                     open.apply(this, args);
                 };
-            })(XMLHttpRequest.prototype.open);
+            })(uwtPageXHR.prototype.open);
+            const originalFetch = uwtPageWin.fetch;
+            if (typeof originalFetch === "function") {
+                uwtPageWin.fetch = async function (input) {
+                    const response = await originalFetch.apply(this, arguments);
+                    try {
+                        const url = input instanceof Request ? input.url : String(input);
+                        if (/\/api\/v1\//.test(url)) {
+                            void response.clone().json().then((json) => {
+                                if (json && json.version)
+                                    void setVersion(json.version);
+                            }).catch(() => { });
+                        }
+                    }
+                    catch (_a) {
+                        // Pass
+                    }
+                    return response;
+                };
+            }
         },
     });
 };const availableAddons = [
@@ -12193,7 +12323,7 @@ init();})(window,markerClusterer,agGrid,proj4,Diff);
 (() => {
   const addStyle = () => {
     const elem = document.createElement("style");
-    elem.innerHTML = (`.uwftcore-checkbox{display:grid;grid-template-columns:1em auto;gap:.5em;line-height:1.1;margin-bottom:.5em;cursor:pointer}.uwftcore-checkbox input[type=checkbox]{appearance:none;font:inherit;color:currentColor;width:1.15em;height:1.15em;border:.15em solid currentColor;border-radius:.15em;display:grid;place-content:center}.uwftcore-checkbox input[type=checkbox]::before{content:"";width:.65em;height:.65em;transform:scale(0);transition:120ms transform ease-in-out;box-shadow:inset 1em 1em #ff6d38}.uwftcore-checkbox input[type=checkbox]:checked::before{transform:scale(1)}.uwftcore-checkbox input[type=checkbox]:disabled::before{box-shadow:inset 1em 1em hsl(16,0%,61%)}.uwftcore-plugin{margin-bottom:1em}.uwftcore-plugin-title{font-weight:bold}.uwftcore-authors{font-size:.8em}.uwftcore-description{font-size:.8em;opacity:.5}.uwftcore-depends{font-size:.8em}.uwftcore-depend-line{font-size:.8em}.uwftcore-refresh-reminder{margin-bottom:1em}.uwftcore-help-available{cursor:context-menu;text-decoration:underline dotted #7f7f7f}.uwftcore-discord-link-box{font-weight:bold}.uwftcore-discord-link-box img{height:1em;display:inline-block;margin-right:5px;margin-top:-4px}.uwftcore-option-line{margin-bottom:1rem}.dark input.uwftcore-fix,.dark select.uwftcore-fix,.dark span.uwftcore-fix{background-color:#333}input.uwftcore-fix,select.uwftcore-fix,span.uwftcore-fix{padding:2px 5px}input.uwftcore-ui-large-input{padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;font-size:16px}.uwftcore-ui-button{background-color:#e5e5e5;border:none;color:#ff4713;padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;text-align:center;text-decoration:none;display:inline-block;font-size:16px;cursor:pointer}.uwftcore-ui-button:hover{background-color:hsl(0,1%,75%);transition:.2s}.dark .uwftcore-ui-button{background-color:hsl(0,1%,25%);color:#20b8e3}.dark .uwftcore-ui-button:hover{background-color:#707070;transition:.2s}.uwftcore-ui-button-active{background-color:hsl(0,1%,67%)}.dark .uwftcore-ui-button-active{background-color:hsl(0,1%,33%)}#uwftcore-notifications{position:absolute;bottom:1em;right:1em;width:30em;z-index:100}.uwftcore-notification{font-weight:bold;border-radius:1em;padding:1em;margin-top:1.5em;color:#fff}.uwftcore-notify-content-wrapper{display:flex;align-items:center}.uwftcore-notify-icon-wrapper{width:30px}.uwftcore-notify-icon-wrapper>img{width:20px;height:20px}.uwftcore-nbg-red{background-color:#c00}.uwftcore-nbg-red a{color:#fcc}.uwftcore-nbg-green{background-color:hsl(153,90%,36%)}.uwftcore-nbg-blue{background-color:hsl(227,74%,39%)}.uwftcore-nbg-purple{background-color:hsl(258,90%,66%)}.uwftcore-nbg-gold{background-color:hsl(43,74%,49%)}.uwftcore-nbg-gray{background-color:hsl(0,0%,50%)}.uwftcore-nbg-brown{background-color:hsl(30,38%,33%)}.uwftcore-nbg-dark-gray{background-color:#666}.uwftcore-sidebar-icon{width:24px}.uwftcore-fullscreen-overlay{position:fixed;top:0;left:0;height:100dvh;width:100dvw;background-color:rgba(0,0,0,.5);z-index:100000}.uwftcore-fullscreen-inner{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px;max-height:500px}.uwftcore-modal-common{width:calc(100vw - 50px);height:calc(100vh - 50px)}.uwftcore-modal-common h3{font-weight:bold;margin:10px auto}.uwftcore-modal-common>p{margin:10px auto}.dark .uwftcore-fullscreen-inner{background-color:#333}.uwftcore-import-options{max-width:550px;height:initial}.uwftcore-import-method{background-color:#e5e5e5;border:none;padding:10px 10px;cursor:pointer;width:100%;background-size:30px;background-position:15px;background-repeat:no-repeat;margin-bottom:10px}.uwftcore-import-method .uwftcore-import-method-title{color:#ff4713;font-size:16px}.uwftcore-import-method .uwftcore-import-method-desc{font-size:12px}.dark .uwftcore-import-method{background-color:#404040}.dark .uwftcore-import-method .uwftcore-import-method-title{color:#20b8e3}.uwftns-wrap-collabsible{margin-bottom:1.2rem}#uwftns-collapsed-stats{display:none}.uwftns-lbl-toggle-ns{display:block;font-weight:bold;font-family:monospace;font-size:1.2rem;text-transform:uppercase;text-align:center;padding:1rem;color:#fff;background:#df471c;cursor:pointer;border-radius:7px;transition:all .25s ease-out}.uwftns-lbl-toggle-ns:hover{color:#d3d3d3}.uwftns-lbl-toggle-ns::before{content:" ";display:inline-block;border-top:5px solid rgba(0,0,0,0);border-bottom:5px solid rgba(0,0,0,0);border-left:5px solid currentColor;vertical-align:middle;margin-right:.7rem;transform:translateY(-2px);transition:transform .2s ease-out}.uwftns-toggle{display:none}.uwftns-toggle:checked+.uwftns-lbl-toggle-ns::before{transform:rotate(90deg) translateX(-3px)}.uwftns-collapsible-content{max-height:0px;overflow:hidden;transition:max-height .25s ease-in-out}.uwftns-toggle:checked+.uwftns-lbl-toggle-ns+.uwftns-collapsible-content{max-height:9999999pt}.uwftns-toggle:checked+.uwftns-lbl-toggle-ns{border-bottom-right-radius:0;border-bottom-left-radius:0}.uwtns-stats-table th,.uwtns-stats-table td{border:#fff solid 1pt;padding:1pt 5pt}.uwtns-stats-table{width:100%}.uwtns-stats-table th:first-child,.uwtns-stats-table td:first-child{text-align:left}.uwtns-stats-table th:not(:first-child),.uwtns-stats-table td:not(:first-child){text-align:center}.uwtkr2-eds-highlighted{border-width:1px;border-color:#df471c}.dark .uwtkr2-eds-highlighted{border-color:#20b8e3}.uwtkr2-eds-btn-key::before,.uwtkr2-key-label,.uwtkr2-key-span{color:#ff6d38;font-family:monospace;text-transform:none;display:inline-block}.uwtkr2-key-span-wildcard{color:#20b8e3}.uwtkr2-eds-btn-key-no-highlight::before{color:#000}.dark .uwtkr2-eds-btn-key-no-highlight::before{color:#fff}.uwtkr2-eds-btn-key-pad::before,.uwtkr2-key-label{margin-right:5px}.uwtkr2-eds-btn-key.is-selected::before,.uwtkr2-eds-btn-key.wf-button--primary::before{color:#000}.uwtkr2-photo-card-label{font-size:1.9em;display:inline-block;padding:0 .5em}.uwtkr2-eds-key-bracket-A::before{content:"A"}.uwtkr2-eds-key-bracket-B::before{content:"B"}.uwtkr2-eds-key-bracket-C::before{content:"C"}.uwtkr2-eds-key-bracket-D::before{content:"D"}.uwtkr2-eds-key-bracket-E::before{content:"E"}.uwtkr2-eds-key-bracket-F::before{content:"F"}.uwtkr2-eds-key-bracket-G::before{content:"G"}.uwtkr2-eds-key-bracket-H::before{content:"H"}.uwtkr2-eds-key-bracket-I::before{content:"I"}.uwtkr2-eds-key-bracket-J::before{content:"J"}.uwtkr2-eds-key-bracket-K::before{content:"K"}.uwtkr2-eds-key-bracket-L::before{content:"L"}.uwtkr2-eds-key-bracket-M::before{content:"M"}.uwtkr2-eds-key-bracket-N::before{content:"N"}.uwtkr2-eds-key-bracket-O::before{content:"O"}.uwtkr2-eds-key-bracket-P::before{content:"P"}.uwtkr2-eds-key-bracket-Q::before{content:"Q"}.uwtkr2-eds-key-bracket-R::before{content:"R"}.uwtkr2-eds-key-bracket-S::before{content:"S"}.uwtkr2-eds-key-bracket-T::before{content:"T"}.uwtkr2-eds-key-bracket-U::before{content:"U"}.uwtkr2-eds-key-bracket-V::before{content:"V"}.uwtkr2-eds-key-bracket-W::before{content:"W"}.uwtkr2-eds-key-bracket-X::before{content:"X"}.uwtkr2-eds-key-bracket-Y::before{content:"Y"}.uwtkr2-eds-key-bracket-Z::before{content:"Z"}.uwtkr2-eds-key-bracket-0::before{content:"0"}.uwtkr2-eds-key-bracket-1::before{content:"1"}.uwtkr2-eds-key-bracket-2::before{content:"2"}.uwtkr2-eds-key-bracket-3::before{content:"3"}.uwtkr2-eds-key-bracket-4::before{content:"4"}.uwtkr2-eds-key-bracket-5::before{content:"5"}.uwtkr2-eds-key-bracket-6::before{content:"6"}.uwtkr2-eds-key-bracket-7::before{content:"7"}.uwtkr2-eds-key-bracket-8::before{content:"8"}.uwtkr2-eds-key-bracket-9::before{content:"9"}.uwtkr2-eds-key-bracket-Esc::before{content:"Esc"}.uwtkr2-eds-key-bracket-Tab::before{content:"Tab"}.uwtkr2-eds-key-bracket-Enter::before{content:"Enter"}.uwtkr2-dupe-key-box{width:0;z-index:10}.uwtkr2-dupe-key-box>div{width:1.7em;margin:5px;text-align:center;font-weight:bold;font-size:1.3em;border:1px solid #000;pointer-events:none;background:rgba(0,0,0,.5);color:#ff6d38}.uwtkr2-card app-review-text-diff{display:inline-block}.uwtrh-idb{color:#333;padding-top:.3em;text-align:center;display:block}.dark .uwtrh-idb{color:#ddd}.uwtrh-idb button{background-color:#e5e5e5;border:none;color:#ff4713;padding:2px 6px;margin:3px;text-align:center;text-decoration:none;display:inline-block;font-size:14px}.dark .uwtrh-idb button{background-color:#404040;color:#20b8e3}.uwtrh-table{display:none;height:500px}.uwtnm-text{font-size:18px}.uwtnm-toggle{display:none}.uwtnm-wrap-collapsible{margin-bottom:1.2rem}#uwtnm-collapsed-map{display:none}.uwtnm-lbl-toggle{display:block;font-weight:bold;font-family:monospace;font-size:1.2rem;text-transform:uppercase;text-align:center;padding:1rem;color:#fff;background:#df471c;cursor:pointer;border-radius:7px;transition:all .25s ease-out}.uwtnm-lbl-toggle:hover{color:#d3d3d3}.uwtnm-lbl-toggle::before{content:" ";display:inline-block;border-top:5px solid rgba(0,0,0,0);border-bottom:5px solid rgba(0,0,0,0);border-left:5px solid currentColor;vertical-align:middle;margin-right:.7rem;transform:translateY(-2px);transition:transform .2s ease-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle::before{transform:rotate(90deg) translateX(-3px)}.uwtnm-collapsible-content{max-height:0px;overflow:hidden;transition:max-height .25s ease-in-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle+.uwtnm-collapsible-content{max-height:9999999pt}.uwtnm-toggle:checked+.uwtnm-lbl-toggle{border-bottom-right-radius:0;border-bottom-left-radius:0}.uwtnm-map{height:400px}.uwftes-text{font-size:18px}.uwftes-count{font-size:18px;display:flex;margin:0px 0px 0px 0px}.uwftes-parent{display:flex;justify-content:space-between;margin:16px 0px 0px}.uwftmr-div{color:#333;margin-left:2em;padding-top:.3em;text-align:center;display:block}.dark .uwftmr-div{color:#ddd}.uwftmr-counter{font-size:20px;color:#20b8e3}.uwftmr-sbb{color:#20b8e3}.uwtrct-outer{color:#333;margin:0 2em;padding-top:.3em;text-align:center;display:block}.dark .uwtrct-outer{color:#ddd}.uwtrct-outer p:nth-child(2){font-size:20px;color:#20b8e3}.uwtegas-options-modal{max-width:700px;height:initial}.uwtegas-table{width:100%}.uwtegas-table td{border:none}.uwtegas-table input{background-color:#ddd;width:100%;padding:5px}.dark .uwtegas-table input{background-color:#222}.uwtegas-cancel-btn{color:#000}.dark .uwtegas-cancel-btn{color:red}.uwtemli-modal{text-align:center}.uwtemli-modal h2{margin-bottom:10px}.uwftat-outer{color:#333;margin:0 2em;padding-top:.3em;text-align:center;display:block}.dark .uwftat-outer{color:#ddd}.uwftat-outer p:nth-child(2){font-size:20px;color:#20b8e3}.uwtdme-hidden{display:none !important}.uwftbdiff-differs{border-bottom:2px solid #ff6d38;background-color:rgba(255,109,56,.3)}.uwtwsr-root-new{margin-top:-1rem;grid-gap:1rem !important}.uwtwsr-root-new app-photo-b img{margin:auto}.uwtwsr-root-new .wf-review-card{height:initial;max-height:380px}.uwtwsr-root-new #check-duplicates-card{max-height:initial}.uwtwsr-root-new .wf-image-modal img{max-height:calc((100dvh - 440px)/2)}@media(max-width: 2000px){.uwtwsr-root-new .action-buttons-row{flex-direction:column !important;justify-content:initial !important}}.uwtwsr-thumbs-row{display:flex;flex-direction:row}.uwtwsr-root-new .dont-know-button{margin-left:0 !important;padding:.375rem !important}.uwtwsr-root-new .question-title .question-subtitle-tooltip{margin-left:.5rem;line-height:1.6rem}.uwtwsr-root-new app-question-card .main-section-container{justify-content:space-between}.uwtoi-label{font-weight:bold}.uwtoi-container{margin-bottom:10px}.uwtoi-dupe-map{padding:0 1rem;margin-top:-1rem}.uwtoi-linkspan::before{content:" · "}.uwtoi-linkspan:nth-child(2)::before{content:""}.uwtoi-experimental{color:#ff8c00;position:relative;display:inline-block}.uwtoi-tttitle{color:#ff8c00;font-weight:bold}.uwtoi-experimental .uwtoi-tooltip{visibility:hidden;width:320px;background-color:rgba(0,0,0,.8);color:#fff;text-align:center;padding:12px;position:absolute;z-index:1;bottom:150%;left:50%;margin-left:-160px;border-radius:10px;pointer-events:none}.uwtoi-experimental .uwtoi-tooltip::after{content:"";position:absolute;top:100%;left:50%;z-index:1;margin-left:-10px;border-width:10px;border-style:solid;border-color:rgba(0,0,0,.8) rgba(0,0,0,0) rgba(0,0,0,0) rgba(0,0,0,0)}.uwtoi-experimental:hover .uwtoi-tooltip{visibility:visible}.uwtoi-address{font-size:1.1em;font-weight:bold;color:#000}.dark .uwtoi-address{color:#fff}img.uwtcml-list-image{width:8rem !important}.uwtcml-details-container{display:flex;flex-wrap:wrap;flex-direction:row}.uwtcml-map-column{flex:1 1 50%;min-width:250px}.uwtcml-details-column{flex:1 1 50%;min-width:250px}.uwtcml-wayspot-details{background-color:#e4e4e4;border-radius:10px;padding:10px;margin-top:10px;margin-right:20px}.dark .uwtcml-wayspot-details{background-color:#444}.uwtcml-wayspot-title-container{display:flex;justify-content:space-between;align-items:center}.uwtcml-wayspot-title-container .uwtcml-wd-title{font-weight:bold;margin-right:10px}.uwtcml-status-live{min-width:35px}.uwtcml-status-retired{min-width:60px}.uwtcml-wd-image{width:100%;border-radius:10px;margin-top:5px;margin-bottom:5px}.uwtcml-wd-description{text-align:left}.uwtcml-hidden{display:none}.uwtcml-edits-container{margin-bottom:24px}.uwtcml-edits-summary-header{font-weight:bold}.uwtcml-edit-summary-table{width:100%;border-collapse:collapse}.uwtcml-edit-summary-table td:first-child{width:100px;border:none}.uwtcml-edit-summary-table td:last-child{width:95px;text-align:right;border:none}.uwtcml-satmap{margin-top:10px;border-radius:10px;overflow:"hidden"}.uwftpb-blocked-hidden{display:none}.uwftpb-header{font-weight:bold}.uwftpb-table{width:100%;border-collapse:collapse}.uwftpb-table td:first-child{width:100px;border:none}.uwftpb-table td:last-child{width:95px;text-align:right;border:none}.uwtnsh-dropdown{cursor:pointer}.uwtnsh-dropdown .uwtnsh-expanded{display:none}.uwtnsh-dropdown .uwtnsh-dd-left{float:left;margin-right:7px;display:block}.uwtnsh-dropdown .uwtnsh-dd-right{float:right}app-submissions app-details-pane app-submission-tag-set+span{display:none}.uwtnsh-verified::after{content:" ✓";color:green;font-family:initial}.dark .uwtnsh-verified::after{color:lime}#uwtvd-display{width:55px;height:20px;overflow:hidden;position:absolute;top:0;left:90px}#uwtvd-display span{position:absolute;white-space:nowrap;transform:translateX(0);transition:2s;margin-top:-1px;font-weight:bold;color:#20b8e3}#uwtvd-display:hover span{transform:translateX(calc(55px - 100%))}wf-logo.uwtvd-touched{position:absolute;top:.5rem;left:.5rem}@media(max-width: 1024px){wf-logo.uwtvd-touched{left:3.5rem}#uwtvd-display{overflow:visible}#uwtvd-display:hover span{transform:none}}.uwtvd-update-available #uwtvd-display{animation:blink-animation 2s steps(2, start) infinite}.uwtvd-update-available #uwtvd-display span{color:red}@keyframes blink-animation{to{visibility:hidden}}.uwftsc-outer{color:#333;margin-left:2em;padding-top:.3em;text-align:center;display:block}.dark .uwftsc-outer{color:#ddd}.uwftsc-outer p:nth-child(2){font-size:20px}.uwftsc-normal{color:#20b8e3}.uwftsc-low{color:#44ce1b}.uwftsc-mid{color:#bbdb44}.uwftsc-med{color:#f7e379}.uwftsc-high{color:#f2a134}.uwftsc-extreme{color:#e51f1f}.uwtSTH-bg{position:fixed;top:0;left:0;height:100vh;width:100vw;background-color:rgba(0,0,0,.5);z-index:100000}.uwtSTH-popup{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);width:calc(100vw - 50px);height:calc(100vh - 50px);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px}.dark .uwtSTH-popup{background-color:#333}.uwtSTH-popup h1{margin-bottom:20px;width:calc(70% - 70px);float:left}.uwtSTH-search{width:30%;padding:.7em;font-size:1.1em;background-color:#ddd;float:right;display:none}.dark .uwtSTH-search{background-color:#222}.uwtSTH-searchMatch{background-color:#ff0;color:#000;display:inline-block;box-shadow:0 0 4px rgba(0,0,0,.5);white-space:pre}.uwtSTH-close{z-index:2;font-size:2em;cursor:pointer;opacity:.5;float:right;margin-left:14px}.uwtSTH-close:hover{opacity:1}.uwtSTH-box{height:calc(100% - 60px);display:flex;background-color:#ddd;clear:both}.dark .uwtSTH-box{background-color:#222}.uwtSTH-box>div{height:100%}.uwtSTH-list{width:40%;background-color:#eee;overflow-y:scroll;border-right:3px solid #fff}.dark .uwtSTH-list{background-color:#2a2a2a;border-right:3px solid #333}.uwtSTH-chat{width:60%;overflow-y:scroll;padding-bottom:15px}.uwtSTH-listitem{padding:10px;border-bottom:3px solid #fff;cursor:pointer;white-space:nowrap}.uwtSTH-listitem p{overflow:hidden;text-overflow:ellipsis}.dark .uwtSTH-listitem{border-bottom:3px solid #333}.uwtSTH-selected{background-color:#ddd;cursor:default}.dark .uwtSTH-selected{background-color:#222}.uwtSTH-message{padding:15px;clear:both}.uwtSTH-chatBubble{border-radius:8px;max-width:270px;padding:10px}.uwtSTH-chatBubble a{text-decoration:underline}.uwtSTH-msgState-sent .uwtSTH-chatBubble a{color:#fff}.uwtSTH-msgState-received .uwtSTH-chatBubble a{color:#000}.uwtSTH-msgState-sent .uwtSTH-chatBubble{background-color:#d85813;color:#fff;float:right}.uwtSTH-msgState-received .uwtSTH-chatBubble{background-color:#fff;color:#000;float:left}.uwtSTH-message>p{font-size:.8em;opacity:.8;margin:3px}.uwtSTH-msgState-received>p{text-align:left}.uwtSTH-msgState-sent>p{text-align:right}.uwtSTH-mt-option{background-color:#eee;padding:5px;margin-top:5px;border:1px solid #ccc}`);
+    elem.innerHTML = (`.uwtoi-label{font-weight:bold}.uwtoi-container{margin-bottom:10px}.uwtoi-dupe-map{padding:0 1rem;margin-top:-1rem}.uwtoi-linkspan::before{content:" · "}.uwtoi-linkspan:nth-child(2)::before{content:""}.uwtoi-experimental{color:#ff8c00;position:relative;display:inline-block}.uwtoi-tttitle{color:#ff8c00;font-weight:bold}.uwtoi-experimental .uwtoi-tooltip{visibility:hidden;width:320px;background-color:rgba(0,0,0,.8);color:#fff;text-align:center;padding:12px;position:absolute;z-index:1;bottom:150%;left:50%;margin-left:-160px;border-radius:10px;pointer-events:none}.uwtoi-experimental .uwtoi-tooltip::after{content:"";position:absolute;top:100%;left:50%;z-index:1;margin-left:-10px;border-width:10px;border-style:solid;border-color:rgba(0,0,0,.8) rgba(0,0,0,0) rgba(0,0,0,0) rgba(0,0,0,0)}.uwtoi-experimental:hover .uwtoi-tooltip{visibility:visible}.uwtoi-address{font-size:1.1em;font-weight:bold;color:#000}.dark .uwtoi-address{color:#fff}.uwftcore-checkbox{display:grid;grid-template-columns:1em auto;gap:.5em;line-height:1.1;margin-bottom:.5em;cursor:pointer}.uwftcore-checkbox input[type=checkbox]{appearance:none;font:inherit;color:currentColor;width:1.15em;height:1.15em;border:.15em solid currentColor;border-radius:.15em;display:grid;place-content:center}.uwftcore-checkbox input[type=checkbox]::before{content:"";width:.65em;height:.65em;transform:scale(0);transition:120ms transform ease-in-out;box-shadow:inset 1em 1em #ff6d38}.uwftcore-checkbox input[type=checkbox]:checked::before{transform:scale(1)}.uwftcore-checkbox input[type=checkbox]:disabled::before{box-shadow:inset 1em 1em hsl(16,0%,61%)}.uwftcore-plugin{margin-bottom:1em}.uwftcore-plugin-title{font-weight:bold}.uwftcore-authors{font-size:.8em}.uwftcore-description{font-size:.8em;opacity:.5}.uwftcore-depends{font-size:.8em}.uwftcore-depend-line{font-size:.8em}.uwftcore-refresh-reminder{margin-bottom:1em}.uwftcore-help-available{cursor:context-menu;text-decoration:underline dotted #7f7f7f}.uwftcore-discord-link-box{font-weight:bold}.uwftcore-discord-link-box img{height:1em;display:inline-block;margin-right:5px;margin-top:-4px}.uwftcore-option-line{margin-bottom:1rem}.dark input.uwftcore-fix,.dark select.uwftcore-fix,.dark span.uwftcore-fix{background-color:#333}input.uwftcore-fix,select.uwftcore-fix,span.uwftcore-fix{padding:2px 5px}input.uwftcore-ui-large-input{padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;font-size:16px}.uwftcore-ui-button{background-color:#e5e5e5;border:none;color:#ff4713;padding:10px 10px;margin:10px 10px 10px 0;border-radius:.375rem;text-align:center;text-decoration:none;display:inline-block;font-size:16px;cursor:pointer}.uwftcore-ui-button:hover{background-color:hsl(0,1%,75%);transition:.2s}.dark .uwftcore-ui-button{background-color:hsl(0,1%,25%);color:#20b8e3}.dark .uwftcore-ui-button:hover{background-color:#707070;transition:.2s}.uwftcore-ui-button-active{background-color:hsl(0,1%,67%)}.dark .uwftcore-ui-button-active{background-color:hsl(0,1%,33%)}#uwftcore-notifications{position:absolute;bottom:1em;right:1em;width:30em;z-index:100}.uwftcore-notification{font-weight:bold;border-radius:1em;padding:1em;margin-top:1.5em;color:#fff}.uwftcore-notify-content-wrapper{display:flex;align-items:center}.uwftcore-notify-icon-wrapper{width:30px}.uwftcore-notify-icon-wrapper>img{width:20px;height:20px}.uwftcore-nbg-red{background-color:#c00}.uwftcore-nbg-red a{color:#fcc}.uwftcore-nbg-green{background-color:hsl(153,90%,36%)}.uwftcore-nbg-blue{background-color:hsl(227,74%,39%)}.uwftcore-nbg-purple{background-color:hsl(258,90%,66%)}.uwftcore-nbg-gold{background-color:hsl(43,74%,49%)}.uwftcore-nbg-gray{background-color:hsl(0,0%,50%)}.uwftcore-nbg-brown{background-color:hsl(30,38%,33%)}.uwftcore-nbg-dark-gray{background-color:#666}.uwftcore-sidebar-icon{width:24px}.uwftcore-fullscreen-overlay{position:fixed;top:0;left:0;height:100dvh;width:100dvw;background-color:rgba(0,0,0,.5);z-index:100000}.uwftcore-fullscreen-inner{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px;max-height:500px}.uwftcore-modal-common{width:calc(100vw - 50px);height:calc(100vh - 50px)}.uwftcore-modal-common h3{font-weight:bold;margin:10px auto}.uwftcore-modal-common>p{margin:10px auto}.dark .uwftcore-fullscreen-inner{background-color:#333}.uwftcore-import-options{max-width:550px;height:initial}.uwftcore-import-method{background-color:#e5e5e5;border:none;padding:10px 10px;cursor:pointer;width:100%;background-size:30px;background-position:15px;background-repeat:no-repeat;margin-bottom:10px}.uwftcore-import-method .uwftcore-import-method-title{color:#ff4713;font-size:16px}.uwftcore-import-method .uwftcore-import-method-desc{font-size:12px}.dark .uwftcore-import-method{background-color:#404040}.dark .uwftcore-import-method .uwftcore-import-method-title{color:#20b8e3}#uwt-status-stack{position:fixed;left:16px;bottom:150px;z-index:99990;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.uwt-pill{display:flex;align-items:center;gap:.5em;margin:0;padding:.25em .8em;border-radius:999px;background:rgba(17,24,39,.92);color:#f9fafb;box-shadow:0 2px 8px rgba(0,0,0,.4);font-size:14px;line-height:1.2;white-space:nowrap;user-select:none}.uwt-pill p{margin:0}.uwt-pill p:nth-child(2){font-size:18px;font-weight:bold;font-variant-numeric:tabular-nums}.uwtrh-idb{color:#333;padding-top:.3em;text-align:center;display:block}.dark .uwtrh-idb{color:#ddd}.uwtrh-idb button{background-color:#e5e5e5;border:none;color:#ff4713;padding:2px 6px;margin:3px;text-align:center;text-decoration:none;display:inline-block;font-size:14px}.dark .uwtrh-idb button{background-color:#404040;color:#20b8e3}.uwtrh-table{display:none;height:500px}.uwftes-text{font-size:18px}.uwftes-count{font-size:18px;display:flex;margin:0px 0px 0px 0px}.uwftes-parent{display:flex;justify-content:space-between;margin:16px 0px 0px}.uwtnm-text{font-size:18px}.uwtnm-toggle{display:none}.uwtnm-wrap-collapsible{margin-bottom:1.2rem}#uwtnm-collapsed-map{display:none}.uwtnm-lbl-toggle{display:block;font-weight:bold;font-family:monospace;font-size:1.2rem;text-transform:uppercase;text-align:center;padding:1rem;color:#fff;background:#df471c;cursor:pointer;border-radius:7px;transition:all .25s ease-out}.uwtnm-lbl-toggle:hover{color:#d3d3d3}.uwtnm-lbl-toggle::before{content:" ";display:inline-block;border-top:5px solid rgba(0,0,0,0);border-bottom:5px solid rgba(0,0,0,0);border-left:5px solid currentColor;vertical-align:middle;margin-right:.7rem;transform:translateY(-2px);transition:transform .2s ease-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle::before{transform:rotate(90deg) translateX(-3px)}.uwtnm-collapsible-content{max-height:0px;overflow:hidden;transition:max-height .25s ease-in-out}.uwtnm-toggle:checked+.uwtnm-lbl-toggle+.uwtnm-collapsible-content{max-height:9999999pt}.uwtnm-toggle:checked+.uwtnm-lbl-toggle{border-bottom-right-radius:0;border-bottom-left-radius:0}.uwtnm-map{height:400px}.uwftat-outer p:nth-child(2){color:#20b8e3}img.uwtcml-list-image{width:8rem !important}.uwtcml-details-container{display:flex;flex-wrap:wrap;flex-direction:row}.uwtcml-map-column{flex:1 1 50%;min-width:250px}.uwtcml-details-column{flex:1 1 50%;min-width:250px}.uwtcml-wayspot-details{background-color:#e4e4e4;border-radius:10px;padding:10px;margin-top:10px;margin-right:20px}.dark .uwtcml-wayspot-details{background-color:#444}.uwtcml-wayspot-title-container{display:flex;justify-content:space-between;align-items:center}.uwtcml-wayspot-title-container .uwtcml-wd-title{font-weight:bold;margin-right:10px}.uwtcml-status-live{min-width:35px}.uwtcml-status-retired{min-width:60px}.uwtcml-wd-image{width:100%;border-radius:10px;margin-top:5px;margin-bottom:5px}.uwtcml-wd-description{text-align:left}.uwtcml-hidden{display:none}.uwtcml-edits-container{margin-bottom:24px}.uwtcml-edits-summary-header{font-weight:bold}.uwtcml-edit-summary-table{width:100%;border-collapse:collapse}.uwtcml-edit-summary-table td:first-child{width:100px;border:none}.uwtcml-edit-summary-table td:last-child{width:95px;text-align:right;border:none}.uwtcml-satmap{margin-top:10px;border-radius:10px;overflow:"hidden"}.uwtemli-modal{text-align:center}.uwtemli-modal h2{margin-bottom:10px}.uwtwsr-root-new{margin-top:-1rem;grid-gap:1rem !important}.uwtwsr-root-new app-photo-b img{margin:auto}.uwtwsr-root-new .wf-review-card{height:initial;max-height:380px}.uwtwsr-root-new #check-duplicates-card{max-height:initial}.uwtwsr-root-new .wf-image-modal img{max-height:calc((100dvh - 440px)/2)}@media(max-width: 2000px){.uwtwsr-root-new .action-buttons-row{flex-direction:column !important;justify-content:initial !important}}.uwtwsr-thumbs-row{display:flex;flex-direction:row}.uwtwsr-root-new .dont-know-button{margin-left:0 !important;padding:.375rem !important}.uwtwsr-root-new .question-title .question-subtitle-tooltip{margin-left:.5rem;line-height:1.6rem}.uwtwsr-root-new app-question-card .main-section-container{justify-content:space-between}.uwtkr2-eds-highlighted{border-width:1px;border-color:#df471c}.dark .uwtkr2-eds-highlighted{border-color:#20b8e3}.uwtkr2-eds-btn-key::before,.uwtkr2-key-label,.uwtkr2-key-span{color:#ff6d38;font-family:monospace;text-transform:none;display:inline-block}.uwtkr2-key-span-wildcard{color:#20b8e3}.uwtkr2-eds-btn-key-no-highlight::before{color:#000}.dark .uwtkr2-eds-btn-key-no-highlight::before{color:#fff}.uwtkr2-eds-btn-key-pad::before,.uwtkr2-key-label{margin-right:5px}.uwtkr2-eds-btn-key.is-selected::before,.uwtkr2-eds-btn-key.wf-button--primary::before{color:#000}.uwtkr2-photo-card-label{font-size:1.9em;display:inline-block;padding:0 .5em}.uwtkr2-eds-key-bracket-A::before{content:"A"}.uwtkr2-eds-key-bracket-B::before{content:"B"}.uwtkr2-eds-key-bracket-C::before{content:"C"}.uwtkr2-eds-key-bracket-D::before{content:"D"}.uwtkr2-eds-key-bracket-E::before{content:"E"}.uwtkr2-eds-key-bracket-F::before{content:"F"}.uwtkr2-eds-key-bracket-G::before{content:"G"}.uwtkr2-eds-key-bracket-H::before{content:"H"}.uwtkr2-eds-key-bracket-I::before{content:"I"}.uwtkr2-eds-key-bracket-J::before{content:"J"}.uwtkr2-eds-key-bracket-K::before{content:"K"}.uwtkr2-eds-key-bracket-L::before{content:"L"}.uwtkr2-eds-key-bracket-M::before{content:"M"}.uwtkr2-eds-key-bracket-N::before{content:"N"}.uwtkr2-eds-key-bracket-O::before{content:"O"}.uwtkr2-eds-key-bracket-P::before{content:"P"}.uwtkr2-eds-key-bracket-Q::before{content:"Q"}.uwtkr2-eds-key-bracket-R::before{content:"R"}.uwtkr2-eds-key-bracket-S::before{content:"S"}.uwtkr2-eds-key-bracket-T::before{content:"T"}.uwtkr2-eds-key-bracket-U::before{content:"U"}.uwtkr2-eds-key-bracket-V::before{content:"V"}.uwtkr2-eds-key-bracket-W::before{content:"W"}.uwtkr2-eds-key-bracket-X::before{content:"X"}.uwtkr2-eds-key-bracket-Y::before{content:"Y"}.uwtkr2-eds-key-bracket-Z::before{content:"Z"}.uwtkr2-eds-key-bracket-0::before{content:"0"}.uwtkr2-eds-key-bracket-1::before{content:"1"}.uwtkr2-eds-key-bracket-2::before{content:"2"}.uwtkr2-eds-key-bracket-3::before{content:"3"}.uwtkr2-eds-key-bracket-4::before{content:"4"}.uwtkr2-eds-key-bracket-5::before{content:"5"}.uwtkr2-eds-key-bracket-6::before{content:"6"}.uwtkr2-eds-key-bracket-7::before{content:"7"}.uwtkr2-eds-key-bracket-8::before{content:"8"}.uwtkr2-eds-key-bracket-9::before{content:"9"}.uwtkr2-eds-key-bracket-Esc::before{content:"Esc"}.uwtkr2-eds-key-bracket-Tab::before{content:"Tab"}.uwtkr2-eds-key-bracket-Enter::before{content:"Enter"}.uwtkr2-dupe-key-box{width:0;z-index:10}.uwtkr2-dupe-key-box>div{width:1.7em;margin:5px;text-align:center;font-weight:bold;font-size:1.3em;border:1px solid #000;pointer-events:none;background:rgba(0,0,0,.5);color:#ff6d38}.uwtkr2-card app-review-text-diff{display:inline-block}.uwftmr-div{color:#333;margin-left:2em;padding-top:.3em;text-align:center;display:block}.dark .uwftmr-div{color:#ddd}.uwftmr-counter{font-size:20px;color:#20b8e3}.uwftmr-sbb{color:#20b8e3}.uwftbdiff-differs{border-bottom:2px solid #ff6d38;background-color:rgba(255,109,56,.3)}#uwtns-button{position:fixed;left:64px;bottom:64px;z-index:99990;width:40px;height:40px;border-radius:50%;border:1px solid rgba(128,128,128,.5);background:#111827;color:#f9fafb;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:0;opacity:.75}#uwtns-button:hover{opacity:1}.uwtns-modal{position:relative;background:#fff !important;color:#111827 !important;font-size:15px;width:min(760px,100vw - 50px)}.uwtns-modal.uwt-dark{background:#1f2937 !important;color:#f9fafb !important}.uwtns-modal h2{font-size:1.4rem;font-weight:bold;margin-bottom:.8rem}.uwtns-modal .uwtns-x{position:absolute;top:8px;right:14px;font-size:26px;cursor:pointer;opacity:.6;background:none;border:0;color:inherit}.uwtns-modal .uwtns-x:hover{opacity:1}#uwftns-export{display:flex;gap:.5rem;margin-top:1rem}.uwtns-stats-table th,.uwtns-stats-table td{border:1px solid rgba(128,128,128,.6);padding:1pt 5pt}.uwtns-stats-table{width:100%}.uwtns-stats-table th:first-child,.uwtns-stats-table td:first-child{text-align:left}.uwtns-stats-table th:not(:first-child),.uwtns-stats-table td:not(:first-child){text-align:center}.uwtrct-outer{position:fixed;left:16px;bottom:112px;z-index:99990;display:flex;align-items:center;gap:.5em;margin:0;padding:.25em .8em;border-radius:999px;background:rgba(17,24,39,.92);color:#f9fafb;box-shadow:0 2px 8px rgba(0,0,0,.4);font-size:14px;line-height:1.2;cursor:pointer;user-select:none}.uwtrct-outer p{margin:0}.uwtrct-outer p:nth-child(2){font-size:18px;font-weight:bold;color:#20b8e3;font-variant-numeric:tabular-nums}.uwtegas-options-modal{max-width:700px;height:initial}.uwtegas-table{width:100%}.uwtegas-table td{border:none}.uwtegas-table input{background-color:#ddd;width:100%;padding:5px}.dark .uwtegas-table input{background-color:#222}.uwtegas-cancel-btn{color:#000}.dark .uwtegas-cancel-btn{color:red}.uwtnsh-dropdown{cursor:pointer}.uwtnsh-dropdown .uwtnsh-expanded{display:none}.uwtnsh-dropdown .uwtnsh-dd-left{float:left;margin-right:7px;display:block}.uwtnsh-dropdown .uwtnsh-dd-right{float:right}app-submissions app-details-pane app-submission-tag-set+span{display:none}.uwtnsh-verified::after{content:" ✓";color:green;font-family:initial}.dark .uwtnsh-verified::after{color:lime}.uwftsc-normal{color:#20b8e3}.uwftsc-low{color:#44ce1b}.uwftsc-mid{color:#bbdb44}.uwftsc-med{color:#f7e379}.uwftsc-high{color:#f2a134}.uwftsc-extreme{color:#e51f1f}.uwtdme-hidden{display:none !important}.uwftpb-blocked-hidden{display:none}.uwftpb-header{font-weight:bold}.uwftpb-table{width:100%;border-collapse:collapse}.uwftpb-table td:first-child{width:100px;border:none}.uwftpb-table td:last-child{width:95px;text-align:right;border:none}#uwtvd-display{position:fixed;left:64px;bottom:26px;z-index:99990;padding:.1em .7em;border-radius:999px;background:rgba(17,24,39,.85);font-size:12px;line-height:1.3;box-shadow:0 2px 8px rgba(0,0,0,.35);pointer-events:none}#uwtvd-display span{white-space:nowrap;font-weight:bold;color:#20b8e3}.uwtvd-update-available #uwtvd-display{animation:blink-animation 2s steps(2, start) infinite}.uwtvd-update-available #uwtvd-display span{color:red}@keyframes blink-animation{to{visibility:hidden}}.uwtSTH-bg{position:fixed;top:0;left:0;height:100vh;width:100vw;background-color:rgba(0,0,0,.5);z-index:100000}.uwtSTH-popup{position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);width:calc(100vw - 50px);height:calc(100vh - 50px);overflow-x:hidden;overflow-y:scroll;background-color:#fff;padding:20px;max-width:900px}.dark .uwtSTH-popup{background-color:#333}.uwtSTH-popup h1{margin-bottom:20px;width:calc(70% - 70px);float:left}.uwtSTH-search{width:30%;padding:.7em;font-size:1.1em;background-color:#ddd;float:right;display:none}.dark .uwtSTH-search{background-color:#222}.uwtSTH-searchMatch{background-color:#ff0;color:#000;display:inline-block;box-shadow:0 0 4px rgba(0,0,0,.5);white-space:pre}.uwtSTH-close{z-index:2;font-size:2em;cursor:pointer;opacity:.5;float:right;margin-left:14px}.uwtSTH-close:hover{opacity:1}.uwtSTH-box{height:calc(100% - 60px);display:flex;background-color:#ddd;clear:both}.dark .uwtSTH-box{background-color:#222}.uwtSTH-box>div{height:100%}.uwtSTH-list{width:40%;background-color:#eee;overflow-y:scroll;border-right:3px solid #fff}.dark .uwtSTH-list{background-color:#2a2a2a;border-right:3px solid #333}.uwtSTH-chat{width:60%;overflow-y:scroll;padding-bottom:15px}.uwtSTH-listitem{padding:10px;border-bottom:3px solid #fff;cursor:pointer;white-space:nowrap}.uwtSTH-listitem p{overflow:hidden;text-overflow:ellipsis}.dark .uwtSTH-listitem{border-bottom:3px solid #333}.uwtSTH-selected{background-color:#ddd;cursor:default}.dark .uwtSTH-selected{background-color:#222}.uwtSTH-message{padding:15px;clear:both}.uwtSTH-chatBubble{border-radius:8px;max-width:270px;padding:10px}.uwtSTH-chatBubble a{text-decoration:underline}.uwtSTH-msgState-sent .uwtSTH-chatBubble a{color:#fff}.uwtSTH-msgState-received .uwtSTH-chatBubble a{color:#000}.uwtSTH-msgState-sent .uwtSTH-chatBubble{background-color:#d85813;color:#fff;float:right}.uwtSTH-msgState-received .uwtSTH-chatBubble{background-color:#fff;color:#000;float:left}.uwtSTH-message>p{font-size:.8em;opacity:.8;margin:3px}.uwtSTH-msgState-received>p{text-align:left}.uwtSTH-msgState-sent>p{text-align:right}.uwtSTH-mt-option{background-color:#eee;padding:5px;margin-top:5px;border:1px solid #ccc}`);
     document.querySelector("head")?.appendChild(elem);
     return elem;
   };

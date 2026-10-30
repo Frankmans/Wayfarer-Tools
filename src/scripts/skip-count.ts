@@ -17,7 +17,8 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 import { register } from "../core";
-import { untilTruthy, makeChildNode } from "../utils";
+import { makeChildNode } from "../utils";
+import { uwtStatusStack } from "../status-stack";
 import { SkipReview } from "../types";
 
 import "./skip-count.css";
@@ -46,13 +47,13 @@ export default () => {
     },
     initialize: (toolbox, logger, _config) => {
       const updateCounter = async () => {
-        const container = await untilTruthy(() => document.querySelector("wf-logo")?.parentElement?.parentElement);
+        const container = await uwtStatusStack();
         const now = Date.now();
         let counter = document.getElementById("uwftsc-counter");
         let label = document.getElementById("uwftsc-label");
         if (counter === null) {
           const div = makeChildNode(container, "div");
-          div.classList.add("uwftsc-outer");
+          div.classList.add("uwftsc-outer", "uwt-pill");
           label = makeChildNode(div, "p", "Skip Count:");
           label.id = "uwftsc-label";
           counter = makeChildNode(div, "p", "Loading…");

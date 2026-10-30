@@ -17,7 +17,8 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 import { register } from "../core";
-import { untilTruthy, makeChildNode } from "../utils";
+import { makeChildNode } from "../utils";
+import { uwtStatusStack } from "../status-stack";
 import { SubmissionsResult, SubmitAppeal } from "../types";
 
 import "./appeal-timer.css";
@@ -47,13 +48,13 @@ export default () => {
     sessionData: {},
     initialize: (toolbox, logger, _config) => {
       const updateTimer = async (result?: SubmissionsResult) => {
-        const container = await untilTruthy(() => document.querySelector("wf-logo")?.parentElement?.parentElement);
+        const container = await uwtStatusStack();
         const now = Date.now();
         let counter = document.getElementById("uwftat-counter");
         let label = document.getElementById("uwftat-label");
         if (counter === null) {
           const div = makeChildNode(container, "div");
-          div.classList.add("uwftat-outer");
+          div.classList.add("uwftat-outer", "uwt-pill");
           label = makeChildNode(div, "p", result?.canAppeal ? AVAILABLE_LABEL : UNAVAILABLE_LABEL);
           label.id = "uwftat-label";
           counter = makeChildNode(div, "p", "Loading…");
@@ -66,7 +67,7 @@ export default () => {
             .filter(a => a.ts >= now - APPEAL_COUNTDOWN_MSEC)
             .sort((a, b) => a.ts - b.ts);
           if (recent.length >= MAX_APPEALS || !result?.canAppeal) {
-            const ttl = ((recent[0].ts + APPEAL_COUNTDOWN_MSEC) - now) / 1000;
+            const ttl = recent.length ? ((recent[0].ts + APPEAL_COUNTDOWN_MSEC) - now) / 1000 : NaN;
             if (ttl / 86400 >= 1) {
               counter.textContent = `~${Math.round(ttl / 86400)} days`;
             } else if (ttl / 3600 >= 1) {

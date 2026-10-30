@@ -1,68 +1,72 @@
-.uwftns-wrap-collabsible {
-  margin-bottom: 1.2rem;
-}
-
-#uwftns-collapsed-stats {
-  display: none;
-}
-
-.uwftns-lbl-toggle-ns {
-  display: block;
-  font-weight: bold;
-  font-family: monospace;
-  font-size: 1.2rem;
-  text-transform: uppercase;
-  text-align: center;
-  padding: 1rem;
-  color: white;
-  background: #DF471C;
+/* redesign: button (next to the Nomination map button) and window for the stats */
+#uwtns-button {
+  position: fixed;
+  left: 64px;
+  bottom: 64px;
+  z-index: 99990;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  background: #111827;
+  color: #f9fafb;
   cursor: pointer;
-  border-radius: 7px;
-  transition: all 0.25s ease-out;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  padding: 0;
+  opacity: 0.75;
 }
 
-.uwftns-lbl-toggle-ns:hover {
-  color: lightgrey;
+#uwtns-button:hover {
+  opacity: 1;
 }
 
-.uwftns-lbl-toggle-ns::before {
-  content: ' ';
-  display: inline-block;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 5px solid currentColor;
-  vertical-align: middle;
-  margin-right: .7rem;
-  transform: translateY(-2px);
-  transition: transform .2s ease-out;
+.uwtns-modal {
+  position: relative;
+  background: #fff !important;
+  color: #111827 !important;
+  font-size: 15px;
+  width: min(760px, calc(100vw - 50px));
 }
 
-.uwftns-toggle {
-  display: none;
+.uwtns-modal.uwt-dark {
+  background: #1f2937 !important;
+  color: #f9fafb !important;
 }
 
-.uwftns-toggle:checked+.uwftns-lbl-toggle-ns::before {
-  transform: rotate(90deg) translateX(-3px);
+.uwtns-modal h2 {
+  font-size: 1.4rem;
+  font-weight: bold;
+  margin-bottom: 0.8rem;
 }
 
-.uwftns-collapsible-content {
-  max-height: 0px;
-  overflow: hidden;
-  transition: max-height .25s ease-in-out;
+.uwtns-modal .uwtns-x {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  font-size: 26px;
+  cursor: pointer;
+  opacity: 0.6;
+  background: none;
+  border: 0;
+  color: inherit;
 }
 
-.uwftns-toggle:checked+.uwftns-lbl-toggle-ns+.uwftns-collapsible-content {
-  max-height: 9999999pt;
+.uwtns-modal .uwtns-x:hover {
+  opacity: 1;
 }
 
-.uwftns-toggle:checked+.uwftns-lbl-toggle-ns {
-  border-bottom-right-radius: 0;
-  border-bottom-left-radius: 0;
+#uwftns-export {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
 }
 
 .uwtns-stats-table th,
 .uwtns-stats-table td {
-  border: white solid 1pt;
+  border: 1px solid rgba(128, 128, 128, 0.6);
   padding: 1pt 5pt;
 }
 
@@ -73,11 +77,9 @@
 .uwtns-stats-table th:first-child,
 .uwtns-stats-table td:first-child {
   text-align: left;
-  /* Left-align the content within the first column */
 }
 
 .uwtns-stats-table th:not(:first-child),
 .uwtns-stats-table td:not(:first-child) {
   text-align: center;
-  /* Center-align the content within columns 2 to 5 */
 }
