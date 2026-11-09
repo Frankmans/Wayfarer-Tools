@@ -497,7 +497,14 @@ class KeyNotFoundError extends Error {
         this.name = "KeyNotFoundError";
     }
 }
-let activeConns = 0;
+let activeConns = 0;														
+// Compatibility fix for browsers without Symbol.dispose
+if (typeof Symbol.dispose === "undefined") {
+    Object.defineProperty(Symbol, "dispose", {
+        configurable: true,
+        value: Symbol.for("Symbol.dispose")
+    });
+}
 class IDBStoreConnection {
     constructor(db, objectStoreName, mode) {
         _IDBStoreConnection_instances.add(this);
